@@ -128,12 +128,39 @@ Write your full step-by-step analysis first. Then close with this JSON block —
 }
 ```
 
-## Rejection Rules
-- REJECTED if there are ANY CRITICAL or HIGH severity issues.
-- REJECTED if tests fail, are missing for core functionality, or do not actually test agent behavior.
-- REJECTED if credentials or API keys could be leaked.
-- REJECTED if AI agent components are wrong: missing tool schemas, wrong async patterns, no timeout/retry for LLM calls, unbounded loops.
-- REJECTED if the code is pseudocode or has TODO placeholders instead of real implementation.
+## Rejection Rules — Building-an-Agent Standard (use as primary rubric)
+
+REJECTED if ANY of the following are true:
+
+**Loop & control flow**
+- Agent loop is unbounded (`while True`) or has no explicit error on cap hit
+- Termination conditions are not both explicit (final answer AND cap reached)
+
+**Reliability**
+- Any model call lacks `timeout` or `num_retries`
+- Structured output (JSON) parsed with non-greedy regex `\{.*?\}` — breaks on nested objects
+- Parsed JSON object not validated for required fields before use
+
+**Tool contract**
+- Tool parameters are not type-annotated
+- Tool raises an exception into the loop instead of returning a structured error string
+- File-writing tool does not validate the model-supplied path against the sandbox dir
+- Tools have side effects at import time
+
+**Security**
+- Hardcoded absolute paths (`/home/...`) in source code
+- Credentials or secrets in code or prompts instead of env vars
+
+**Completeness**
+- Pseudocode, `TODO`, or `pass` placeholders instead of real implementation
+- Tests missing, or tests exist but do not exercise actual agent/tool behavior
+- Project does not install cleanly (`requirements.txt` missing or broken)
+- Entry point does not run from a clean checkout
+
+**Pattern**
+- Multi-agent architecture used where a single agent would suffice (over-engineering)
+
+REJECTED if there are ANY CRITICAL or HIGH severity issues not covered above.
 
 ## Critical Constraint
 Each issue MUST include a fix with enough detail that a developer can implement it WITHOUT asking follow-up questions. Vague feedback like "fix the error handling" is NOT acceptable — show them exactly what code to write.
