@@ -1,6 +1,10 @@
 from agent_factory.llm_agent import Agent, AgentConfig
 from agent_factory.config import DEFAULT_FAST_MODEL, DEFAULT_REASONING_MODEL, DEFAULT_ANALYSIS_MODEL
-from agent_factory.tools import write_project_file, read_project_file, list_project_files, check_python_syntax, run_project_tests
+from agent_factory.tools import (
+    write_project_file, read_project_file, list_project_files,
+    check_python_syntax, run_project_tests,
+    install_dependencies, lint_code, run_program,
+)
 
 # SYSTEM INSTRUCTIONS FOR EACH SPECIALIST
 
@@ -91,8 +95,10 @@ Your job is to perform a thorough technical review of ALL files produced by the 
 1. Call list_project_files to see all generated files.
 2. Call read_project_file on EVERY SINGLE file — do not skip any file.
 3. Call check_python_syntax on every .py file found.
-4. Call run_project_tests and analyze the full output.
-5. Evaluate each file for: correctness, completeness, AI agent best practices, security, and testability.
+4. Call lint_code(".") to catch style and logic issues objectively.
+5. Call run_program to verify the entry point actually executes without errors.
+6. Call run_project_tests and analyze the full output.
+7. Evaluate each file for: correctness, completeness, AI agent best practices, security, and testability.
 
 ## Issue Severity Levels
 - CRITICAL: Prevents the system from running at all (syntax errors, missing imports, wrong API calls)
@@ -199,20 +205,27 @@ def get_agent(role_name: str, model_name: str = None) -> Agent:
     #   REASONING  (qwen2.5-coder:14b) — code architecture, code review, technical auditing
     #   FAST       (qwen2.5-coder:7b)  — coding tasks: backend, RAG, memory, QA, DevOps
     #   ANALYSIS   (mistral:7b)        — planning, writing, research, security analysis, business audit
+    #
+    # Tier-S tools (install_dependencies, lint_code, run_program) close the verification loop:
+    #   backend    — installs deps after writing code so import errors surface immediately
+    #   qa         — installs deps, lints, runs the program, then writes & runs tests
+    #   technical_auditor — lints and runs program for objective proof beyond syntax checks
+    _rw  = [write_project_file, read_project_file, list_project_files]
+    _ro  = [read_project_file, list_project_files]
     role_map = {
-        "pm":                (PM_INSTRUCTIONS,               DEFAULT_ANALYSIS_MODEL,   [write_project_file, read_project_file, list_project_files]),
-        "research":          (RESEARCH_INSTRUCTIONS,         DEFAULT_ANALYSIS_MODEL,   [write_project_file, read_project_file, list_project_files]),
-        "architect":         (ARCHITECT_INSTRUCTIONS,        DEFAULT_REASONING_MODEL,  [write_project_file, read_project_file, list_project_files]),
-        "prompt":            (PROMPT_ENGINEER_INSTRUCTIONS,  DEFAULT_FAST_MODEL,       [write_project_file, read_project_file, list_project_files]),
-        "backend":           (BACKEND_INSTRUCTIONS,          DEFAULT_REASONING_MODEL,  [write_project_file, read_project_file, list_project_files]),
-        "rag":               (RAG_INSTRUCTIONS,              DEFAULT_FAST_MODEL,       [write_project_file, read_project_file, list_project_files]),
-        "memory":            (MEMORY_INSTRUCTIONS,           DEFAULT_FAST_MODEL,       [write_project_file, read_project_file, list_project_files]),
-        "qa":                (QA_INSTRUCTIONS,               DEFAULT_FAST_MODEL,       [write_project_file, read_project_file, list_project_files, run_project_tests]),
-        "security":          (SECURITY_INSTRUCTIONS,         DEFAULT_ANALYSIS_MODEL,   [write_project_file, read_project_file, list_project_files]),
-        "devops":            (DEVOPS_INSTRUCTIONS,           DEFAULT_FAST_MODEL,       [write_project_file, read_project_file, list_project_files]),
-        "cost":              (COST_INSTRUCTIONS,             DEFAULT_ANALYSIS_MODEL,   [write_project_file, read_project_file, list_project_files]),
-        "technical_auditor": (TECHNICAL_AUDITOR_INSTRUCTIONS, DEFAULT_REASONING_MODEL, [read_project_file, list_project_files, check_python_syntax, run_project_tests]),
-        "business_auditor":  (BUSINESS_AUDITOR_INSTRUCTIONS,  DEFAULT_ANALYSIS_MODEL,  [read_project_file, list_project_files]),
+        "pm":                (PM_INSTRUCTIONS,               DEFAULT_ANALYSIS_MODEL,   _rw),
+        "research":          (RESEARCH_INSTRUCTIONS,         DEFAULT_ANALYSIS_MODEL,   _rw),
+        "architect":         (ARCHITECT_INSTRUCTIONS,        DEFAULT_REASONING_MODEL,  _rw),
+        "prompt":            (PROMPT_ENGINEER_INSTRUCTIONS,  DEFAULT_FAST_MODEL,       _rw),
+        "backend":           (BACKEND_INSTRUCTIONS,          DEFAULT_REASONING_MODEL,  _rw + [install_dependencies]),
+        "rag":               (RAG_INSTRUCTIONS,              DEFAULT_FAST_MODEL,       _rw),
+        "memory":            (MEMORY_INSTRUCTIONS,           DEFAULT_FAST_MODEL,       _rw),
+        "qa":                (QA_INSTRUCTIONS,               DEFAULT_FAST_MODEL,       _rw + [install_dependencies, lint_code, run_program, run_project_tests]),
+        "security":          (SECURITY_INSTRUCTIONS,         DEFAULT_ANALYSIS_MODEL,   _rw),
+        "devops":            (DEVOPS_INSTRUCTIONS,           DEFAULT_FAST_MODEL,       _rw),
+        "cost":              (COST_INSTRUCTIONS,             DEFAULT_ANALYSIS_MODEL,   _rw),
+        "technical_auditor": (TECHNICAL_AUDITOR_INSTRUCTIONS, DEFAULT_REASONING_MODEL, _ro + [check_python_syntax, lint_code, run_program, run_project_tests]),
+        "business_auditor":  (BUSINESS_AUDITOR_INSTRUCTIONS,  DEFAULT_ANALYSIS_MODEL,  _ro),
     }
     
     if role_name not in role_map:

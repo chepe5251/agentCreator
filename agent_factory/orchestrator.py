@@ -6,7 +6,7 @@ from typing import Dict, Any, Tuple, List
 from agent_factory.config import MAX_AUDIT_ITERATIONS, WORKSPACE_DIR
 from agent_factory.agents import get_agent
 from agent_factory.memory import IterationMemory
-from agent_factory.tools import list_project_files, check_python_syntax, run_project_tests
+from agent_factory.tools import list_project_files, check_python_syntax, run_project_tests, lint_code
 
 
 def _balanced_json(text: str, start: int) -> str | None:
@@ -399,13 +399,19 @@ class EnterpriseOrchestrator:
             if "Syntax Error" in result:
                 failures.append(result)
 
+        lint_result = lint_code(".")
+        if "issues" in lint_result.lower() and "no issues" not in lint_result.lower():
+            failures.append(lint_result[:400])
+
         test_result = run_project_tests()
-        if "FAILED" in test_result or "Execution error" in test_result:
+        if "does not exist" in test_result:
+            failures.append("No tests/ directory found — core functionality must have automated tests.")
+        elif "FAILED" in test_result or "Execution error" in test_result:
             failures.append(test_result[:500])
 
         if failures:
             return False, " | ".join(failures)
-        return True, "All syntax checks passed and tests ran successfully."
+        return True, "All syntax checks, linting, and tests passed."
 
     def _generate_final_summary(self, approved: bool, total_iterations: int) -> str:
         """Generates a summary markdown report of the pipeline run."""

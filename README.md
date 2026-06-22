@@ -82,19 +82,28 @@ El proyecto se ejecuta en un entorno virtual aislado:
    ANTHROPIC_API_KEY=sk-ant-...
    ```
 
-   **Ollama (local):**
+   **Ollama (local or remote):**
    ```env
-   LLM_FAST_MODEL=ollama/llama3.2
-   LLM_REASONING_MODEL=ollama/llama3.2
-   OLLAMA_API_BASE=http://localhost:11434
+   LLM_FAST_MODEL=ollama/qwen2.5-coder:7b
+   LLM_REASONING_MODEL=ollama/qwen2.5-coder:14b
+   LLM_ANALYSIS_MODEL=ollama/mistral:7b
+   OLLAMA_API_BASE=http://192.168.100.216:11434
    ```
 
    **Google Gemini:**
    ```env
    LLM_FAST_MODEL=gemini/gemini-2.0-flash
-   LLM_REASONING_MODEL=gemini/gemini-1.5-pro
+   LLM_REASONING_MODEL=gemini/gemini-2.5-pro
    GEMINI_API_KEY=...
    ```
+
+   > **Note:** `AGENT_WORKSPACE` is a shell environment variable, not a `.env` entry.
+   > The workspace path must be known *before* `.env` is read, so set it in your shell if
+   > you run the project from a non-standard location:
+   > ```bash
+   > export AGENT_WORKSPACE=/path/to/agentCreator
+   > ```
+   > Without it the system auto-detects the repo root from the package location.
 
 ## Ejecución del Sistema
 

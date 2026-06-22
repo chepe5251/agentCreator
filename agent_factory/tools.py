@@ -81,6 +81,102 @@ def check_python_syntax(filepath: str) -> str:
         return f"Syntax Error in {filepath}:\n{str(e)}"
 
 
+def install_dependencies(requirements_file: str = "requirements.txt") -> str:
+    """Installs Python packages listed in a requirements file found inside output/.
+
+    Args:
+        requirements_file: Relative path to the requirements file (default: 'requirements.txt').
+    """
+    try:
+        target = _safe_target(requirements_file)
+    except ValueError as e:
+        return f"Error: {e}"
+    if not target.exists():
+        return f"Error: {requirements_file} does not exist in output/."
+    try:
+        res = subprocess.run(
+            ["pip", "install", "-r", str(target), "--quiet", "--disable-pip-version-check"],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if res.returncode == 0:
+            return f"Dependencies installed successfully from {requirements_file}."
+        return f"Dependency installation failed:\n{res.stderr[:600]}"
+    except subprocess.TimeoutExpired:
+        return "Error: dependency installation timed out after 180s."
+    except Exception as e:
+        return f"Error installing dependencies: {e}"
+
+
+def lint_code(filepath: str = ".") -> str:
+    """Runs ruff (fallback: flake8) on a file or directory inside output/.
+
+    Args:
+        filepath: Relative path to lint, or '.' to lint the entire output/ directory.
+    """
+    if filepath == ".":
+        target = OUTPUT_DIR
+    else:
+        try:
+            target = _safe_target(filepath)
+        except ValueError as e:
+            return f"Error: {e}"
+    if not target.exists():
+        return f"Error: {filepath} does not exist in output/."
+
+    for linter_cmd in [["ruff", "check", str(target)], ["flake8", str(target)]]:
+        try:
+            res = subprocess.run(linter_cmd, capture_output=True, text=True, timeout=30)
+            tool = linter_cmd[0]
+            if res.returncode == 0:
+                return f"{tool}: No issues found in {filepath}."
+            return f"{tool} issues in {filepath}:\n{(res.stdout + res.stderr)[:1000]}"
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            return f"Linter error: {e}"
+    return "Error: neither ruff nor flake8 is installed. Run: pip install ruff"
+
+
+def run_program(entrypoint: str = "src/main.py", args: str = "") -> str:
+    """Executes the generated program and captures its output (30s timeout).
+
+    NOTE: runs LLM-generated code directly — use inside a container for production.
+
+    Args:
+        entrypoint: Relative path to the Python entry point (e.g. 'src/main.py').
+        args: Optional space-separated CLI arguments to pass to the program.
+    """
+    try:
+        target = _safe_target(entrypoint)
+    except ValueError as e:
+        return f"Error: {e}"
+    if not target.exists():
+        return f"Error: {entrypoint} does not exist in output/."
+
+    cmd = ["python3", str(target)]
+    if args:
+        cmd.extend(args.split())
+
+    try:
+        res = subprocess.run(
+            cmd,
+            cwd=str(OUTPUT_DIR),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        output = (res.stdout + res.stderr)[:1200]
+        if res.returncode == 0:
+            return f"Program exited 0 (success).\nOutput:\n{output}"
+        return f"Program exited {res.returncode}.\nOutput:\n{output}"
+    except subprocess.TimeoutExpired:
+        return "Error: program timed out after 30s (server/blocking I/O? Use a non-blocking entry point for smoke tests)."
+    except Exception as e:
+        return f"Error running program: {e}"
+
+
 def run_project_tests(test_script: str = "tests") -> str:
     """Runs tests for the generated project using unittest.
 
