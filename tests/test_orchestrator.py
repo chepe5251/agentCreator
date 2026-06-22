@@ -148,6 +148,20 @@ class TestTools(unittest.TestCase):
         if out_path.exists():
             os.remove(out_path)
 
+    def test_markdown_fence_stripped(self):
+        """Local LLMs often wrap file content in ```python ... ``` — must be stripped."""
+        fence_file = "test_fence.py"
+        content_with_fence = "```python\nprint('hello')\n```"
+        write_project_file(fence_file, content_with_fence)
+        result = read_project_file(fence_file)
+        self.assertNotIn("```", result)
+        self.assertIn("print('hello')", result)
+        # Must be valid Python after stripping
+        self.assertEqual(check_python_syntax(fence_file), f"Syntax OK for {fence_file}.")
+        out_path = OUTPUT_DIR / fence_file
+        if out_path.exists():
+            os.remove(out_path)
+
 
 if __name__ == "__main__":
     unittest.main()

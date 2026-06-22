@@ -16,6 +16,27 @@ def _safe_target(filepath: str) -> Path:
     return target
 
 
+_CODE_EXTENSIONS = {".py", ".js", ".ts", ".jsx", ".tsx", ".sh", ".yaml", ".yml", ".toml", ".json"}
+
+def _strip_markdown_fences(content: str, filepath: str) -> str:
+    """Strips ```lang ... ``` fences that local LLMs sometimes write into source files."""
+    ext = Path(filepath).suffix.lower()
+    if ext not in _CODE_EXTENSIONS:
+        return content
+    stripped = content.strip()
+    # Match opening fence: ```python, ```py, ```yaml, ``` alone, etc.
+    first_newline = stripped.find("\n")
+    if stripped.startswith("```") and first_newline != -1:
+        first_line = stripped[:first_newline].strip()
+        # Validate it looks like a fence line (``` optionally followed by a lang identifier)
+        if first_line == "```" or (first_line.startswith("```") and first_line[3:].isalpha()):
+            body = stripped[first_newline + 1:]
+            if body.rstrip().endswith("```"):
+                body = body.rstrip()[:-3].rstrip()
+            return body
+    return content
+
+
 def write_project_file(filepath: str, content: str) -> str:
     """Writes content to a file in the generated project directory.
 
@@ -27,6 +48,7 @@ def write_project_file(filepath: str, content: str) -> str:
         target = _safe_target(filepath)
     except ValueError as e:
         return f"Error: {e}"
+    content = _strip_markdown_fences(content, filepath)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return f"File successfully written to: {filepath}"
