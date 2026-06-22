@@ -150,6 +150,8 @@ class Agent:
                 "model": self._config.model,
                 "messages": self._messages,
                 "drop_params": True,
+                "timeout": 600,    # local models are slow; cloud models rarely need >60s
+                "num_retries": 2,
             }
             if tools:
                 request_kwargs["tools"] = tools

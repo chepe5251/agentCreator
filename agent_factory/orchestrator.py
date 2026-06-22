@@ -2,36 +2,66 @@ import json
 import re
 import asyncio
 from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List
 from agent_factory.config import MAX_AUDIT_ITERATIONS, WORKSPACE_DIR
 from agent_factory.agents import get_agent
 from agent_factory.memory import IterationMemory
-from agent_factory.tools import list_project_files
+from agent_factory.tools import list_project_files, check_python_syntax, run_project_tests
+
+
+def _balanced_json(text: str, start: int) -> str | None:
+    """Extracts the JSON object starting at `start` by counting braces."""
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _extract_json_block(text: str) -> dict | None:
+    """Finds the auditor verdict JSON: prefers fenced blocks, then largest bare block with 'status'."""
+    # 1. Try ```json ... ``` fenced blocks (last fence first — verdict goes at the end)
+    for raw in reversed(re.findall(r"```json\s*(.*?)\s*```", text, re.DOTALL)):
+        try:
+            data = json.loads(raw)
+            if "status" in data:
+                return data
+        except Exception:
+            continue
+
+    # 2. Fall back to bare balanced { } blocks; sort largest→smallest (outermost first)
+    bare: List[str] = []
+    for m in re.finditer(r"\{", text):
+        block = _balanced_json(text, m.start())
+        if block:
+            bare.append(block)
+
+    for block in sorted(bare, key=len, reverse=True):
+        try:
+            data = json.loads(block)
+            if "status" in data:
+                return data
+        except Exception:
+            continue
+
+    return None
+
 
 def parse_auditor_response(text: str) -> Dict[str, Any]:
-    """Extracts JSON block from the auditor response with regex fallbacks."""
-    match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if not match:
-        match = re.search(r"(\{.*?\})", text, re.DOTALL)
+    """Extracts the structured audit JSON from model output."""
+    data = _extract_json_block(text)
+    if data is not None:
+        data.setdefault("feedback", data.get("summary", text))
+        data.setdefault("issues", [])
+        return data
 
-    if match:
-        try:
-            data = json.loads(match.group(1))
-            # Normalize: always keep a flat 'feedback' string even with rich format
-            if "feedback" not in data:
-                data["feedback"] = data.get("summary", text)
-            return data
-        except Exception:
-            pass
-
-    # Fallback to keyword matching
-    status = "REJECTED"
-    clean_text = text.upper()
-    if "APPROVED" in clean_text and "REJECTED" not in clean_text:
-        status = "APPROVED"
-    elif '"STATUS": "APPROVED"' in clean_text or '"STATUS":"APPROVED"' in clean_text:
-        status = "APPROVED"
-
+    # Fallback: keyword scan
+    up = text.upper()
+    status = "APPROVED" if ("APPROVED" in up and "REJECTED" not in up) else "REJECTED"
     return {"status": status, "feedback": text, "issues": []}
 
 
@@ -105,16 +135,37 @@ class EnterpriseOrchestrator:
                 }
             )
             
+            # Step 4: Backstop — objective verification regardless of auditor verdict
+            backstop_ok, backstop_report = self._run_backstop()
+
             # Check Approval
             tech_ok = tech_audit.get("status") == "APPROVED"
-            bus_ok = bus_audit.get("status") == "APPROVED"
-            
+            bus_ok  = bus_audit.get("status") == "APPROVED"
+
+            # If auditors approved but objective checks fail, force rejection
+            if tech_ok and not backstop_ok:
+                tech_audit["status"] = "REJECTED"
+                tech_audit.setdefault("issues", []).insert(0, {
+                    "file": "system-backstop",
+                    "severity": "CRITICAL",
+                    "problem": "Objective verification failed despite auditor approval.",
+                    "why": "Syntax errors or test failures detected by direct pipeline checks.",
+                    "fix": backstop_report,
+                    "expected": "All .py files parse without errors and all tests pass.",
+                })
+                tech_ok = False
+                print(f"[!] Backstop OVERRODE auditor approval — objective checks failed.")
+
             tech_issues = tech_audit.get("issues", [])
-            bus_issues = bus_audit.get("issues", [])
+            bus_issues  = bus_audit.get("issues", [])
             print(f"[*] Iteration {iteration} Audit Results:")
             print(f"    - Technical Auditor: {tech_audit.get('status')} | {len(tech_issues)} issue(s) | {tech_audit.get('summary', tech_audit.get('feedback', ''))[:120]}")
             print(f"    - Business Auditor:  {bus_audit.get('status')} | {len(bus_issues)} issue(s) | {bus_audit.get('summary', bus_audit.get('feedback', ''))[:120]}")
-            
+            if backstop_ok:
+                print(f"    - Backstop:          PASSED")
+            else:
+                print(f"    - Backstop:          FAILED — {backstop_report[:120]}")
+
             if tech_ok and bus_ok:
                 approved = True
                 print(f"[+] PROJECT APPROVED at iteration {iteration}!")
@@ -337,6 +388,24 @@ class EnterpriseOrchestrator:
         )
 
         return header + "\n\n" + tech_brief + "\n\n---\n\n" + bus_brief
+
+    def _run_backstop(self) -> Tuple[bool, str]:
+        """Objectively verifies output: syntax-checks all .py files and runs tests.
+        Returns (passed, report). Does not call any LLM."""
+        failures = []
+        py_files = [f for f in list_project_files() if f.endswith(".py")]
+        for f in py_files:
+            result = check_python_syntax(f)
+            if "Syntax Error" in result:
+                failures.append(result)
+
+        test_result = run_project_tests()
+        if "FAILED" in test_result or "Execution error" in test_result:
+            failures.append(test_result[:500])
+
+        if failures:
+            return False, " | ".join(failures)
+        return True, "All syntax checks passed and tests ran successfully."
 
     def _generate_final_summary(self, approved: bool, total_iterations: int) -> str:
         """Generates a summary markdown report of the pipeline run."""

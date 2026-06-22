@@ -1,11 +1,14 @@
 import json
+import os
 from pathlib import Path
 from typing import Dict, Any, List
+
 from agent_factory.config import LOGS_DIR
+
 
 class IterationMemory:
     """Manages the history of project iterations, code updates, and auditor reviews."""
-    
+
     def __init__(self, run_id: str):
         self.run_id = run_id
         self.run_dir = LOGS_DIR / run_id
@@ -13,10 +16,18 @@ class IterationMemory:
         self.history_file = self.run_dir / "history.json"
         self._init_history()
 
-    def _init_history(self):
+    def _atomic_write(self, data: list) -> None:
+        """Writes data to history_file atomically via a temp file + os.replace."""
+        tmp = self.history_file.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self.history_file)
+
+    def _init_history(self) -> None:
         if not self.history_file.exists():
-            with open(self.history_file, "w", encoding="utf-8") as f:
-                json.dump([], f, indent=2)
+            self._atomic_write([])
 
     def load_history(self) -> List[Dict[str, Any]]:
         """Loads the full iteration history."""
@@ -26,57 +37,39 @@ class IterationMemory:
         except Exception:
             return []
 
-    def get_iteration_data(self, iteration: int) -> Dict[str, Any]:
-        """Gets data for a specific iteration."""
+    def log_iteration(
+        self,
+        iteration: int,
+        deliverables: Dict[str, Any],
+        reviews: Dict[str, Any],
+        audits: Dict[str, Any],
+    ) -> None:
+        """Logs a complete iteration cycle (overwrites same iteration if retried)."""
         history = self.load_history()
-        for record in history:
-            if record.get("iteration") == iteration:
-                return record
-        return {}
-
-    def get_latest_iteration(self) -> Dict[str, Any]:
-        """Gets the most recent iteration data."""
-        history = self.load_history()
-        if history:
-            return history[-1]
-        return {}
-
-    def log_iteration(self, iteration: int, deliverables: Dict[str, Any], reviews: Dict[str, Any], audits: Dict[str, Any]):
-        """Logs a complete iteration cycle."""
-        history = self.load_history()
-        # Remove if iteration already exists (overwrite)
         history = [h for h in history if h.get("iteration") != iteration]
-        
-        record = {
+        history.append({
             "iteration": iteration,
             "deliverables": deliverables,
             "reviews": reviews,
-            "audits": audits
-        }
-        history.append(record)
-        
-        with open(self.history_file, "w", encoding="utf-8") as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
+            "audits": audits,
+        })
+        self._atomic_write(history)
 
     def get_accumulated_feedback(self) -> str:
-        """Accumulates all feedback and audit findings for prompt injection to agents during fixes."""
+        """Returns all audit feedback concatenated — useful for cross-iteration context."""
         history = self.load_history()
         if not history:
             return "No previous history."
-        
-        summary_lines = []
+
+        lines = []
         for h in history:
             it = h.get("iteration")
-            summary_lines.append(f"--- Iteration {it} ---")
-
+            lines.append(f"--- Iteration {it} ---")
             audits = h.get("audits", {})
-            tech_audit = audits.get("technical_auditor", {})
-            bus_audit = audits.get("business_auditor", {})
-
-            summary_lines.append(f"Technical Audit: {tech_audit.get('status', 'PENDING')}")
-            summary_lines.append(f"Technical Feedback:\n{tech_audit.get('feedback', 'None')}")
-
-            summary_lines.append(f"Business Audit: {bus_audit.get('status', 'PENDING')}")
-            summary_lines.append(f"Business Feedback:\n{bus_audit.get('feedback', 'None')}")
-
-        return "\n".join(summary_lines)
+            tech = audits.get("technical_auditor", {})
+            bus  = audits.get("business_auditor", {})
+            lines.append(f"Technical Audit: {tech.get('status', 'PENDING')}")
+            lines.append(f"Technical Feedback:\n{tech.get('feedback', 'None')}")
+            lines.append(f"Business Audit: {bus.get('status', 'PENDING')}")
+            lines.append(f"Business Feedback:\n{bus.get('feedback', 'None')}")
+        return "\n".join(lines)

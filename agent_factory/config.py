@@ -1,10 +1,12 @@
 import os
 from pathlib import Path
 
-# Base Paths
-WORKSPACE_DIR = Path("/home/chepe52/projectAgent/agentCreator")
-LOGS_DIR = WORKSPACE_DIR / "logs"
-LOGS_DIR.mkdir(exist_ok=True, parents=True)
+# Derive workspace from repo root (parent of this file's package directory).
+# Override with AGENT_WORKSPACE env var for CI / alternate installs.
+WORKSPACE_DIR = Path(os.getenv("AGENT_WORKSPACE", str(Path(__file__).resolve().parents[1])))
+OUTPUT_DIR    = WORKSPACE_DIR / "output"
+LOGS_DIR      = WORKSPACE_DIR / "logs"
+# No mkdir at import time — directories are created on first use.
 
 # Default models — override via .env
 # Examples:
@@ -12,9 +14,9 @@ LOGS_DIR.mkdir(exist_ok=True, parents=True)
 #   Claude:  anthropic/claude-haiku-4-5-20251001, anthropic/claude-sonnet-4-6
 #   Ollama:  ollama/mistral:7b, ollama/qwen2.5-coder:7b, ollama/qwen2.5-coder:14b
 #   Gemini:  gemini/gemini-2.0-flash
-DEFAULT_FAST_MODEL = os.getenv("LLM_FAST_MODEL", "gpt-4o-mini")
+DEFAULT_FAST_MODEL     = os.getenv("LLM_FAST_MODEL",     "gpt-4o-mini")
 DEFAULT_REASONING_MODEL = os.getenv("LLM_REASONING_MODEL", "gpt-4o")
-DEFAULT_ANALYSIS_MODEL = os.getenv("LLM_ANALYSIS_MODEL", DEFAULT_FAST_MODEL)
+DEFAULT_ANALYSIS_MODEL  = os.getenv("LLM_ANALYSIS_MODEL",  DEFAULT_FAST_MODEL)
 
 # Iterations configuration
 MAX_AUDIT_ITERATIONS = 10
@@ -34,20 +36,20 @@ if ENV_PATH.exists():
                 os.environ[key] = val
 
 # Re-read model defaults after .env load
-DEFAULT_FAST_MODEL = os.getenv("LLM_FAST_MODEL", DEFAULT_FAST_MODEL)
+DEFAULT_FAST_MODEL      = os.getenv("LLM_FAST_MODEL",      DEFAULT_FAST_MODEL)
 DEFAULT_REASONING_MODEL = os.getenv("LLM_REASONING_MODEL", DEFAULT_REASONING_MODEL)
-DEFAULT_ANALYSIS_MODEL = os.getenv("LLM_ANALYSIS_MODEL", DEFAULT_FAST_MODEL)
+DEFAULT_ANALYSIS_MODEL  = os.getenv("LLM_ANALYSIS_MODEL",  DEFAULT_FAST_MODEL)
 
 _PROVIDER_ENV = {
-    "openai": ["OPENAI_API_KEY"],
-    "anthropic": ["ANTHROPIC_API_KEY"],
-    "gemini": ["GEMINI_API_KEY"],
-    "vertex_ai": ["VERTEXAI_PROJECT"],
-    "azure": ["AZURE_API_KEY", "AZURE_API_BASE"],
-    "cohere": ["COHERE_API_KEY"],
-    "mistral": ["MISTRAL_API_KEY"],
-    "groq": ["GROQ_API_KEY"],
-    "deepseek": ["DEEPSEEK_API_KEY"],
+    "openai":     ["OPENAI_API_KEY"],
+    "anthropic":  ["ANTHROPIC_API_KEY"],
+    "gemini":     ["GEMINI_API_KEY"],
+    "vertex_ai":  ["VERTEXAI_PROJECT"],
+    "azure":      ["AZURE_API_KEY", "AZURE_API_BASE"],
+    "cohere":     ["COHERE_API_KEY"],
+    "mistral":    ["MISTRAL_API_KEY"],
+    "groq":       ["GROQ_API_KEY"],
+    "deepseek":   ["DEEPSEEK_API_KEY"],
 }
 
 
@@ -70,7 +72,6 @@ def _provider_for_model(model: str) -> str:
 
     try:
         from litellm import get_llm_provider
-
         _, provider, _, _ = get_llm_provider(model)
         return provider or "unknown"
     except Exception:
@@ -93,14 +94,13 @@ def validate_llm_setup(model: str) -> tuple[bool, str]:
             f"Model '{model}' (provider: {provider}) requires: {vars_str}. "
             f"Add them to .env or export them in your shell.",
         )
-
     return True, ""
 
 
 def validate_default_models() -> tuple[bool, str]:
-    """Validates credentials for both default models used by the orchestrator."""
+    """Validates credentials for all three default models used by the orchestrator."""
     errors = []
-    for model in {DEFAULT_FAST_MODEL, DEFAULT_REASONING_MODEL}:
+    for model in {DEFAULT_FAST_MODEL, DEFAULT_REASONING_MODEL, DEFAULT_ANALYSIS_MODEL}:
         ok, error = validate_llm_setup(model)
         if not ok:
             errors.append(error)
