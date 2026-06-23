@@ -282,19 +282,24 @@ class EnterpriseOrchestrator:
             # Architect — designs the architecture AND the concrete file plan for THIS project
             async with get_agent("architect") as arch:
                 response = await arch.chat(
-                    "Based on 'spec.md' and 'research.md', design the overall architecture and save it in "
-                    "'architecture.md'.\n\n"
-                    "Then decide the exact set of source files the developers must create to implement THIS "
-                    "specific project, derived from the architecture — NOT a fixed template. Do NOT assume the "
-                    "project needs a database, RAG, or a memory module unless the spec actually requires it.\n"
-                    "At the END of your response, output ONLY a JSON array of the files to build, each as "
-                    '{"file": "<path>", "purpose": "<what this file does>"}. Example: '
+                    f"The user's actual request is: '{self.project_prompt}'.\n"
+                    "Design the system that fulfills THAT request specifically — NOT a generic "
+                    "agent template. Read 'spec.md' and 'requirements.md' first and ground every "
+                    "decision in what the user actually asked for.\n\n"
+                    "Save the architecture in 'architecture.md'. Then decide the exact set of "
+                    "source files the developers must create to implement THIS specific project, "
+                    "derived from the requirement — NOT a fixed template. Do NOT assume the project "
+                    "needs a database, RAG, or a memory module unless the spec requires it.\n"
+                    "Every file in your plan must be a REAL component of the user's system. Do NOT "
+                    "include demo/sample tools (calculators, example fetchers) or simulated/mock "
+                    "LLM clients — those are placeholders, not deliverables.\n"
+                    "At the END of your response, output ONLY a JSON array of the files to build, "
+                    'each as {"file": "<path>", "purpose": "<what this file does>"}. Example: '
                     '[{"file":"src/main.py","purpose":"CLI entry point and main loop"},'
                     '{"file":"src/auditor.py","purpose":"tool-based checks returning a verdict"}]. '
-                    "Include the entry point and every file the project needs — source modules, and ONLY IF the "
-                    "project genuinely requires it, deployment files (e.g. a Dockerfile, docker-compose.yml) or "
-                    "analysis docs. Do NOT include a Dockerfile, docker-compose, or cost analysis unless the project "
-                    "actually needs to be containerized or deployed — most local CLI tools do not."
+                    "Include the entry point and every file the project needs — source modules, and "
+                    "ONLY IF genuinely required, deployment files or analysis docs (most local CLI "
+                    "tools need neither)."
                 )
                 arch_text = await response.text()
                 deliverables["architect"] = arch_text
@@ -322,7 +327,9 @@ class EnterpriseOrchestrator:
                         f"Purpose of this file: {purpose}\n\n"
                         "Read 'spec.md' and 'architecture.md' first, and read any already-created source files "
                         "this one depends on. Write complete, runnable code — no placeholders, no TODOs, no "
-                        "NotImplementedError. If this file needs third-party packages, add them to "
+                        "NotImplementedError, no mock/simulated LLM clients, and no empty tool schemas (build tool "
+                        "parameters from the function signature; json.loads tool-call arguments before calling). "
+                        "If this file needs third-party packages, add them to "
                         "'requirements.txt' (real pip packages only, never stdlib modules like json/os/typing)."
                     )
                     deliverables[f"dev::{f}"] = await response.text()

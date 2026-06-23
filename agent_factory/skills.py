@@ -12,7 +12,8 @@ def load_skill(name: str) -> str:
 # Which skills each role receives, injected into its system prompt.
 # Auditors are intentionally excluded: they already carry the rubric in their prompt.
 ROLE_SKILLS = {
-    "architect": ["building-an-agent"],
+    # architect intentionally excluded: it must decompose the USER's request,
+    # not be primed to build a generic agent.
     "backend":   ["building-an-agent"],
     "prompt":    ["building-an-agent"],
     "rag":       ["building-an-agent"],

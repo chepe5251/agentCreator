@@ -121,31 +121,38 @@ cost, more failure modes, and more tokens. Over-engineering here is a rejection 
 - Pseudocode, `TODO`, or `pass` placeholders where real logic belongs.
 - Tests that don't actually exercise agent behavior (no mocked LLM, no tool assertions).
 
-## 8. Minimal reference skeleton
+## 8. Implementation rules (the parts models get wrong)
 
-```python
-async def run_agent(model, system, tools, user_goal, max_rounds=25, timeout=600):
-    messages = [{"role": "system", "content": system},
-                {"role": "user", "content": user_goal}]
-    schemas = [to_tool_schema(t) for t in tools]            # from typed signatures
-    tool_map = {t.__name__: t for t in tools}
+There is deliberately NO copy-paste skeleton here. Write the loop yourself from the
+requirements above. These are hard rules — each one is a real bug that has shipped before:
 
-    for _ in range(max_rounds):
-        resp = await acompletion(model=model, messages=messages,
-                                 tools=schemas or None,
-                                 timeout=timeout, num_retries=2, drop_params=True)
-        msg = resp.choices[0].message
-        messages.append(assistant_to_dict(msg))            # include tool_calls!
-        calls = getattr(msg, "tool_calls", None) or []
-        if not calls:
-            return msg.content or ""                        # final answer
-        for c in calls:
-            fn = tool_map.get(c.function.name)
-            out = execute_safely(fn, c.function.arguments)  # structured error on fail
-            messages.append({"role": "tool",
-                             "tool_call_id": c.id, "content": out})
-    return "Error: maximum tool rounds exceeded."           # explicit, not silent
-```
+- **Tool schemas must contain the real parameters.** Derive each tool's parameter names,
+  types, and required-ness from its actual function signature. A schema with an empty
+  `parameters: {}` or `{"properties": {}}` is WRONG — the model can never pass arguments, so
+  every tool silently does nothing. Build the properties from the signature.
+- **Tool-call arguments arrive as a JSON STRING, not a dict.** Parse before calling:
+  `args = json.loads(tool_call.function.arguments or "{}")`, then `fn(**args)`. Doing
+  `fn(**tool_call.function.arguments)` passes a string to `**` and raises TypeError — a
+  guaranteed crash.
+- **Never mock, stub, or simulate the LLM call.** The completion MUST hit a real provider
+  (e.g. litellm `acompletion`). A function returning a hard-coded "simulated response",
+  faking failures with `random`, or returning `'model'` / `['tool1']` is a placeholder and
+  will be rejected.
+- **The tool registry maps names to real callables.** `tool_map = {t.__name__: t for t in tools}`
+  requires `tools` to be actual functions; a list of strings breaks `t.__name__`.
+- **Imports must run from the project root.** Use ONE consistent import style across the whole
+  project (a package with `__init__.py`, e.g. `from myproj.agent import run_agent`) so the
+  entrypoint runs from a clean checkout. Never mix `from agent import ...` in one file with
+  `from src.agent import ...` in another — only one works from a given working directory.
+- **The loop body must contain, explicitly:** a bounded `for` over max rounds; the assistant
+  message appended WITH its tool_calls before the tool results; each tool result appended as
+  `role: "tool"` with the matching `tool_call_id`; return the content when there are no tool
+  calls; return an explicit error string when the round cap is hit. Implement exactly the
+  shape in section 1, in your own code.
+
+If you are tempted to leave a helper body as a one-liner stub or a comment like `# simplified`
+or `# assuming a function exists`, STOP and implement it fully. A stubbed helper is the single
+most common reason a build is rejected.
 
 ## 9. Self-check before declaring "done"
 
@@ -159,5 +166,5 @@ Do not finish until ALL are true:
 - [ ] Structured output is parsed robustly (fenced → brace-balanced → keyword), then validated.
 - [ ] No secrets in code; all from env. No hardcoded absolute paths. No import-time side effects.
 - [ ] The chosen pattern is the simplest that works (justify multi-agent if used).
-- [ ] Tests exist that mock the LLM and assert real tool/agent behavior — and they pass.
+- [ ] Tests (and ONLY tests) may mock the LLM; application code calls the REAL LLM client. Tests assert real tool/agent behavior and pass.
 - [ ] The project installs and the entrypoint runs from a clean checkout.
