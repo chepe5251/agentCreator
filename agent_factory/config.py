@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 # Derive workspace from repo root (parent of this file's package directory).
@@ -7,6 +8,23 @@ WORKSPACE_DIR = Path(os.getenv("AGENT_WORKSPACE", str(Path(__file__).resolve().p
 OUTPUT_DIR    = WORKSPACE_DIR / "output"
 LOGS_DIR      = WORKSPACE_DIR / "logs"
 # No mkdir at import time — directories are created on first use.
+
+
+def _slug(name: str) -> str:
+    s = re.sub(r"[^A-Za-z0-9._-]+", "-", name.strip()).strip("-._")
+    return s[:50]
+
+
+def resolve_run_name(name: str) -> str:
+    """Sanitizes a project name and avoids overwriting an existing run (auto-suffix)."""
+    base = _slug(name) if name else ""
+    if not base:
+        from datetime import datetime
+        base = "project_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate, n = base, 2
+    while (OUTPUT_DIR / candidate).exists():
+        candidate, n = f"{base}-{n}", n + 1
+    return candidate
 
 # Default models — override via .env
 # Examples:

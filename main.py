@@ -1,8 +1,6 @@
 import asyncio
 import argparse
 import sys
-import uuid
-from datetime import datetime
 from agent_factory.orchestrator import EnterpriseOrchestrator
 from agent_factory.config import validate_default_models
 
@@ -15,24 +13,34 @@ async def main():
         help="The target project idea or requirements description to build."
     )
     parser.add_argument(
-        "--run-id", 
-        type=str, 
-        default=None, 
-        help="Optional unique identifier for this project run."
+        "--run-id",
+        type=str,
+        default=None,
+        help="Alias for --name (legacy). Prefer --name.",
+    )
+    parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help="Project name. Output folder: output/<name>/",
     )
     args = parser.parse_args()
-    
+
     ok, error = validate_default_models()
     if not ok:
         print("[!] Error: LLM configuration is incomplete.", file=sys.stderr)
         print(f"[!] {error}", file=sys.stderr)
         sys.exit(1)
-        
-    run_id = args.run_id
-    if not run_id:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        short_id = str(uuid.uuid4())[:8]
-        run_id = f"run_{timestamp}_{short_id}"
+
+    from agent_factory.config import resolve_run_name
+    chosen = args.name or args.run_id
+    if not chosen:
+        try:
+            chosen = input("Project name (e.g. todoApi): ").strip()
+        except EOFError:
+            chosen = ""
+    run_id = resolve_run_name(chosen)
+    print(f"[*] Project: {run_id}  ->  output/{run_id}/")
         
     orchestrator = EnterpriseOrchestrator(run_id, args.prompt)
     

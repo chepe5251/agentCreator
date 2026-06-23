@@ -3,7 +3,7 @@ import re
 import asyncio
 from pathlib import Path
 from typing import Dict, Any, Tuple, List
-from agent_factory.config import MAX_AUDIT_ITERATIONS, WORKSPACE_DIR
+from agent_factory.config import MAX_AUDIT_ITERATIONS
 from agent_factory.agents import get_agent
 from agent_factory.memory import IterationMemory
 from agent_factory.tools import list_project_files, check_python_syntax, run_project_tests, lint_code
@@ -120,6 +120,11 @@ class EnterpriseOrchestrator:
         self.run_id = run_id
         self.project_prompt = project_prompt
         self.memory = IterationMemory(run_id)
+        self.requirements_brief = ""
+        from agent_factory.config import OUTPUT_DIR
+        from agent_factory.tools import set_active_output
+        self.output_dir = OUTPUT_DIR / run_id
+        set_active_output(self.output_dir)
         
     async def run(self) -> Tuple[bool, str]:
         """Runs the orchestrator loop. Returns (is_approved, summary_report)."""
@@ -129,7 +134,9 @@ class EnterpriseOrchestrator:
         
         print(f"[*] Starting Agent Factory Enterprise pipeline for Run: {self.run_id}")
         print(f"[*] Project Prompt: {self.project_prompt}")
-        
+        print(f"[*] Output dir: {self.output_dir}")
+        await self._phase_discovery()
+
         while not approved and iteration <= MAX_AUDIT_ITERATIONS:
             print(f"\n=================== ITERATION {iteration} ===================")
             
@@ -207,8 +214,11 @@ class EnterpriseOrchestrator:
             # CEO / PM initial spec
             async with get_agent("pm") as pm:
                 response = await pm.chat(
-                    f"The user wants to build the following project: '{self.project_prompt}'.\n"
-                    "Analyze the requirements, define the scope, and create a specification in 'spec.md'."
+                    f"The user wants to build the following project: '{self.project_prompt}'.\n\n"
+                    f"Requirements gathered during discovery:\n{self.requirements_brief}\n\n"
+                    "Analyze the requirements, define the scope, and create a specification in "
+                    "'spec.md'. Honor the user's answers; where an answer says 'no preference', "
+                    "choose sensibly and note the decision in the spec."
                 )
                 deliverables["pm"] = await response.text()
 
@@ -385,6 +395,70 @@ class EnterpriseOrchestrator:
 
         return ta_audit, ba_audit
 
+    def _parse_questions(self, raw: str) -> list:
+        """Extracts a JSON array of questions from PM output."""
+        m = re.search(r"\[.*\]", raw, re.DOTALL)
+        if not m:
+            return []
+        try:
+            data = json.loads(m.group(0))
+            return [str(q).strip() for q in data if str(q).strip()]
+        except Exception:
+            return []
+
+    async def _ask_questions(self, questions: list) -> list:
+        """Prints questions and collects answers from stdin without blocking the event loop."""
+        qa = []
+        for i, q in enumerate(questions, 1):
+            try:
+                ans = await asyncio.to_thread(input, f"\n  [{i}/{len(questions)}] {q}\n  > ")
+            except EOFError:
+                ans = ""
+            qa.append((q, ans.strip() or "(no preference — use best judgment)"))
+        return qa
+
+    async def _phase_discovery(self) -> None:
+        """Interactive discovery: the PM interviews the user before the build phase."""
+        print("\n=================== DISCOVERY ===================")
+        print("[*] The PM will ask clarifying questions before writing any spec.")
+
+        transcript, MAX_ROUNDS = [], 2
+        ctx = f"User's initial idea: '{self.project_prompt}'"
+
+        for _ in range(MAX_ROUNDS):
+            async with get_agent("pm") as pm:
+                response = await pm.chat(
+                    f"{ctx}\n\n"
+                    "You are interviewing the user to fully understand what they want to build "
+                    "BEFORE any spec is written. Ask every clarifying question you genuinely need "
+                    "(scope, target users, must-have features, tech/runtime constraints, data "
+                    "sources, integrations, success criteria). Do NOT write any files.\n"
+                    "Output ONLY a JSON array of question strings, e.g. "
+                    '["Question 1?", "Question 2?"]. If you already have enough info, output exactly [].'
+                )
+                raw = await response.text()
+
+            questions = self._parse_questions(raw)
+            if not questions:
+                break
+            qa = await self._ask_questions(questions)
+            transcript.extend(qa)
+            answered = "\n".join(f"Q: {q}\nA: {a}" for q, a in qa)
+            ctx = f"User's initial idea: '{self.project_prompt}'\n\nAnswers so far:\n{answered}"
+
+        if transcript:
+            brief = "\n".join(f"- {q}\n  -> {a}" for q, a in transcript)
+        else:
+            brief = "(PM had enough information from the initial idea — no questions needed.)"
+        self.requirements_brief = brief
+
+        from agent_factory.tools import write_project_file
+        write_project_file(
+            "requirements.md",
+            f"# Requirements (discovery)\n\n## Initial idea\n{self.project_prompt}\n\n## Q&A\n{brief}\n",
+        )
+        print("\n[+] Discovery complete. Requirements saved to requirements.md\n")
+
     def _build_feedback_brief(
         self, iteration: int, tech_audit: Dict[str, Any], bus_audit: Dict[str, Any]
     ) -> str:
@@ -463,9 +537,9 @@ class EnterpriseOrchestrator:
         with open(report_path, "w", encoding="utf-8") as f:
             f.write(report)
             
-        # Also copy it to the project output root as 'enterprise_summary.md'
+        # Also write summary into the project output dir
         try:
-            summary_out = WORKSPACE_DIR / "output" / "enterprise_summary.md"
+            summary_out = self.output_dir / "enterprise_summary.md"
             summary_out.parent.mkdir(exist_ok=True, parents=True)
             with open(summary_out, "w", encoding="utf-8") as f:
                 f.write(report)

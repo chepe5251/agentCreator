@@ -5,16 +5,27 @@ import py_compile
 from pathlib import Path
 from typing import List
 
-from agent_factory.config import OUTPUT_DIR
+from agent_factory.config import OUTPUT_DIR as _OUTPUT_ROOT
 
-# Isolated venv inside output/ — keeps generated deps off the host env
-VENV_DIR = OUTPUT_DIR / ".venv"
+_ACTIVE_OUTPUT = _OUTPUT_ROOT  # replaced by the orchestrator per run
+
 _VENV_EXCLUDE = {"venv", ".venv", "__pycache__", ".git"}
 
 
+def set_active_output(path) -> None:
+    """Points ALL file tools to the current run's output directory."""
+    global _ACTIVE_OUTPUT
+    _ACTIVE_OUTPUT = Path(path).resolve()
+    _ACTIVE_OUTPUT.mkdir(parents=True, exist_ok=True)
+
+
+def get_active_output() -> Path:
+    return _ACTIVE_OUTPUT
+
+
 def _safe_target(filepath: str) -> Path:
-    """Resolves filepath inside OUTPUT_DIR and raises if it escapes the sandbox."""
-    base = OUTPUT_DIR.resolve()
+    """Resolves filepath inside _ACTIVE_OUTPUT and raises if it escapes the sandbox."""
+    base = _ACTIVE_OUTPUT.resolve()
     target = (base / filepath).resolve()
     if target == base or base not in target.parents:
         raise ValueError(f"Path outside output/: {filepath!r}")
@@ -23,10 +34,11 @@ def _safe_target(filepath: str) -> Path:
 
 def _venv_python() -> str:
     """Returns the Python executable inside the output/.venv, creating it on first call."""
-    py = VENV_DIR / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    venv_dir = _ACTIVE_OUTPUT / ".venv"
+    py = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     if not py.exists():
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)], timeout=60, check=True)
+        _ACTIVE_OUTPUT.mkdir(parents=True, exist_ok=True)
+        subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], timeout=60, check=True)
     return str(py)
 
 
@@ -85,14 +97,13 @@ def read_project_file(filepath: str) -> str:
 def list_project_files() -> List[str]:
     """Lists all files in the generated project directory (excluding system/virtualenv folders)."""
     files = []
-    if not OUTPUT_DIR.exists():
+    if not _ACTIVE_OUTPUT.exists():
         return files
-    for root, dirs, filenames in os.walk(OUTPUT_DIR):
-        # Prune excluded dirs in-place so os.walk doesn't descend into them
+    for root, dirs, filenames in os.walk(_ACTIVE_OUTPUT):
         dirs[:] = [d for d in dirs if d not in _VENV_EXCLUDE]
         for name in filenames:
             path = Path(root) / name
-            rel = path.relative_to(OUTPUT_DIR)
+            rel = path.relative_to(_ACTIVE_OUTPUT)
             files.append(str(rel))
     return files
 
@@ -152,7 +163,7 @@ def lint_code(filepath: str = ".") -> str:
         filepath: Relative path to lint, or '.' to lint the entire output/ directory.
     """
     if filepath == ".":
-        target = OUTPUT_DIR
+        target = _ACTIVE_OUTPUT
     else:
         try:
             target = _safe_target(filepath)
@@ -203,7 +214,7 @@ def run_program(entrypoint: str = "src/main.py", args: str = "") -> str:
     try:
         res = subprocess.run(
             cmd,
-            cwd=str(OUTPUT_DIR),
+            cwd=str(_ACTIVE_OUTPUT),
             capture_output=True,
             text=True,
             timeout=5,
@@ -213,7 +224,6 @@ def run_program(entrypoint: str = "src/main.py", args: str = "") -> str:
             return f"Program exited 0 (success).\nOutput:\n{output}"
         return f"Program exited {res.returncode} (error).\nOutput:\n{output}"
     except subprocess.TimeoutExpired:
-        # Still running after 5s = started successfully (long-running service/bot/server)
         return "Program started successfully and kept running (long-running service — expected for bots/servers)."
     except Exception as e:
         return f"Error running program: {e}"
@@ -234,7 +244,7 @@ def run_project_tests(test_script: str = "tests") -> str:
     try:
         res = subprocess.run(
             [_venv_python(), "-m", "unittest", "discover", "-s", test_script],
-            cwd=str(OUTPUT_DIR),
+            cwd=str(_ACTIVE_OUTPUT),
             capture_output=True,
             text=True,
             timeout=60,
