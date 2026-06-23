@@ -1,5 +1,6 @@
 from agent_factory.llm_agent import Agent, AgentConfig
 from agent_factory.config import DEFAULT_FAST_MODEL, DEFAULT_REASONING_MODEL, DEFAULT_ANALYSIS_MODEL
+from agent_factory.skills import skills_for
 from agent_factory.tools import (
     write_project_file, read_project_file, list_project_files,
     check_python_syntax, run_project_tests,
@@ -288,6 +289,13 @@ def get_agent(role_name: str, model_name: str = None) -> Agent:
     entry = role_map[role_name]
     instructions, default_m, tools = entry[0], entry[1], entry[2]
     max_rounds = entry[3] if len(entry) > 3 else 25
+    skills = skills_for(role_name)
+    if skills:
+        instructions = (
+            instructions
+            + "\n\n# REFERENCE STANDARDS (follow these — non-compliance is a defect)\n"
+            + skills
+        )
     m = model_name if model_name else default_m
 
     config = AgentConfig(
