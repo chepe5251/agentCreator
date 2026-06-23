@@ -291,7 +291,10 @@ class EnterpriseOrchestrator:
                     '{"file": "<path>", "purpose": "<what this file does>"}. Example: '
                     '[{"file":"src/main.py","purpose":"CLI entry point and main loop"},'
                     '{"file":"src/auditor.py","purpose":"tool-based checks returning a verdict"}]. '
-                    "Include the entry point and every module the project needs."
+                    "Include the entry point and every file the project needs — source modules, and ONLY IF the "
+                    "project genuinely requires it, deployment files (e.g. a Dockerfile, docker-compose.yml) or "
+                    "analysis docs. Do NOT include a Dockerfile, docker-compose, or cost analysis unless the project "
+                    "actually needs to be containerized or deployed — most local CLI tools do not."
                 )
                 arch_text = await response.text()
                 deliverables["architect"] = arch_text
@@ -377,21 +380,6 @@ class EnterpriseOrchestrator:
             )
             reviews["security"] = await response.text()
 
-        # DevOps deployment setup
-        async with get_agent("devops") as devops:
-            response = await devops.chat(
-                "Create and update infrastructure and deployment files (e.g. 'Dockerfile', "
-                "'docker-compose.yml') to package the project."
-            )
-            reviews["devops"] = await response.text()
-
-        # Cost Optimization analysis
-        async with get_agent("cost") as cost:
-            response = await cost.chat(
-                "Analyze the estimated cost of running this agent system and save it in 'cost_analysis.md'."
-            )
-            reviews["cost"] = await response.text()
-            
         return reviews
 
     async def _phase_audit(self, iteration: int) -> Tuple[Dict[str, Any], Dict[str, Any]]:
