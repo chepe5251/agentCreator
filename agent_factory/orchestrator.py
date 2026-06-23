@@ -327,7 +327,9 @@ class EnterpriseOrchestrator:
                         f"Purpose of this file: {purpose}\n\n"
                         "Read 'spec.md' and 'architecture.md' first, and read any already-created source files "
                         "this one depends on. Write complete, runnable code — no placeholders, no TODOs, no "
-                        "NotImplementedError, no mock/simulated LLM clients, and no empty tool schemas (build tool "
+                        "NotImplementedError, no 'for demonstration' or 'this would invoke ...' comments in place "
+                        "of real wiring (if this file coordinates other modules, actually import and call them), "
+                        "no mock/simulated LLM clients, and no empty tool schemas (build tool "
                         "parameters from the function signature; json.loads tool-call arguments before calling). "
                         "If this file needs third-party packages, add them to "
                         "'requirements.txt' (real pip packages only, never stdlib modules like json/os/typing)."
@@ -358,9 +360,13 @@ class EnterpriseOrchestrator:
                 response = await dev.chat(
                     f"## PM correction plan\n{pm_instructions}\n\n"
                     f"## Full audit report\n{audit_feedback}\n\n"
-                    "Apply ALL fixes listed. Read each file with read_project_file before modifying it. "
-                    "Implement every correction with concrete code — no TODOs, no placeholders. "
-                    "You may edit any file in the project."
+                    "Apply ALL fixes listed. For EACH file you change: FIRST read its FULL current "
+                    "contents with read_project_file, THEN write back the COMPLETE file with the fix "
+                    "applied. CRITICAL: preserve every existing function, class, import, and line that is "
+                    "NOT part of the fix. NEVER shorten a file, gut it, or replace working code with stubs, "
+                    "'pass', or 'for demonstration' comments — a file must only become MORE correct between "
+                    "iterations, never lose functionality. If a file orchestrates other modules, actually "
+                    "import and call them — no 'this would invoke ...' placeholder comments. No TODOs, no mock logic."
                 )
                 deliverables["developer"] = await response.text()
                 
@@ -374,8 +380,12 @@ class EnterpriseOrchestrator:
         # QA creates test suite
         async with get_agent("qa") as qa:
             response = await qa.chat(
-                "Write and update automated tests (e.g. in 'tests/test_app.py') "
-                "to cover backend, RAG, and memory functionality. Run the run_project_tests tool."
+                "First call list_project_files to see what source files actually exist. Then write or "
+                "UPDATE automated tests in a SINGLE file 'tests/test_app.py' that exercise the ACTUAL "
+                "modules in src/ — never assumed modules like backend/RAG/memory if they don't exist. "
+                "Do NOT create new or duplicate test files (no *_updated, no temp_* files); edit "
+                "tests/test_app.py in place — read its current contents first and preserve existing "
+                "passing tests. Use unittest. Then run the run_project_tests tool."
             )
             reviews["qa"] = await response.text()
 

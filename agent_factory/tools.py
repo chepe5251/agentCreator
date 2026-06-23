@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import subprocess
 import py_compile
@@ -127,6 +128,24 @@ def check_python_syntax(filepath: str) -> str:
         return f"Syntax Error in {filepath}:\n{str(e)}"
 
 
+_STDLIB = set(sys.stdlib_module_names)  # Python 3.10+
+
+
+def _real_requirements(target) -> list:
+    """Returns only real third-party packages from a requirements file, dropping
+    comments, blank lines, and stdlib module names that are NOT pip-installable
+    (e.g. unittest, json, os, typing, asyncio)."""
+    pkgs = []
+    for line in target.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        name = re.split(r"[<>=!~;\[ ]", line, 1)[0].strip()
+        if name and name.lower().replace("-", "_") not in _STDLIB:
+            pkgs.append(line)
+    return pkgs
+
+
 def install_dependencies(requirements_file: str = "requirements.txt") -> str:
     """Installs Python packages into the isolated output/.venv (never the host env).
 
@@ -139,16 +158,19 @@ def install_dependencies(requirements_file: str = "requirements.txt") -> str:
         return f"Error: {e}"
     if not target.exists():
         return f"Error: {requirements_file} does not exist in output/."
+    pkgs = _real_requirements(target)
+    if not pkgs:
+        return "No external dependencies to install (stdlib-only requirements)."
     try:
         py = _venv_python()
         res = subprocess.run(
-            [py, "-m", "pip", "install", "-r", str(target), "--quiet", "--disable-pip-version-check"],
+            [py, "-m", "pip", "install", *pkgs, "--quiet", "--disable-pip-version-check"],
             capture_output=True,
             text=True,
             timeout=180,
         )
         if res.returncode == 0:
-            return f"Dependencies installed into output/.venv from {requirements_file}."
+            return f"Dependencies installed into output/.venv: {', '.join(pkgs)}"
         return f"Dependency installation failed:\n{res.stderr[:600]}"
     except subprocess.TimeoutExpired:
         return "Error: dependency installation timed out after 180s."
