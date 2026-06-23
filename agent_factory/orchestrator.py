@@ -164,7 +164,9 @@ class EnterpriseOrchestrator:
         iteration = 1
         approved = False
         latest_feedback = ""
-        
+        self._tech_latched = False
+        self._bus_latched = False
+
         print(f"[*] Starting Agent Factory Enterprise pipeline for Run: {self.run_id}")
         print(f"[*] Project Prompt: {self.project_prompt}")
         print(f"[*] Output dir: {self.output_dir}")
@@ -229,13 +231,36 @@ class EnterpriseOrchestrator:
             else:
                 print(f"    - Backstop:          FAILED — {backstop_report[:120]}")
 
-            if tech_ok and bus_ok:
+            # Latch approvals so the loop converges instead of oscillating between auditors.
+            # Technical approval persists ONLY while the objective backstop keeps passing;
+            # an objective regression (backstop fail) un-latches it. Business has no objective
+            # guard, so once given it stays (the backstop still guarantees the code runs).
+            if tech_ok and backstop_ok:
+                self._tech_latched = True
+            if not backstop_ok:
+                self._tech_latched = False
+            if bus_ok:
+                self._bus_latched = True
+
+            effective_tech = tech_ok or (self._tech_latched and backstop_ok)
+            effective_bus  = bus_ok or self._bus_latched
+
+            if effective_tech and effective_bus:
                 approved = True
-                print(f"[+] PROJECT APPROVED at iteration {iteration}!")
+                why = []
+                if not tech_ok:
+                    why.append("technical approval latched (backstop still passing)")
+                if not bus_ok:
+                    why.append("business approval latched")
+                note = f" ({'; '.join(why)})" if why else ""
+                print(f"[+] PROJECT APPROVED at iteration {iteration}!{note}")
                 break
 
-            # Build a structured, developer-ready brief from the rich audit results
-            latest_feedback = self._build_feedback_brief(iteration, tech_audit, bus_audit)
+            # Feed back ONLY the auditors that still reject, so the developer does not
+            # rework already-approved code and regress it.
+            pending_tech = None if effective_tech else tech_audit
+            pending_bus  = None if effective_bus else bus_audit
+            latest_feedback = self._build_feedback_brief(iteration, pending_tech, pending_bus)
             
             iteration += 1
             
@@ -508,26 +533,39 @@ class EnterpriseOrchestrator:
         print("\n[+] Discovery complete. Requirements saved to requirements.md\n")
 
     def _build_feedback_brief(
-        self, iteration: int, tech_audit: Dict[str, Any], bus_audit: Dict[str, Any]
+        self, iteration: int, tech_audit: Dict[str, Any] = None, bus_audit: Dict[str, Any] = None
     ) -> str:
-        """Builds a structured, developer-ready brief from the rich audit results."""
-        tech_brief = _format_audit_brief(tech_audit, "Technical Auditor")
-        bus_brief = _format_audit_brief(bus_audit, "Business Auditor")
+        """Builds a developer-ready brief from the auditors that still REJECT.
+        An auditor passed as None has already approved and is omitted, so the developer
+        does not touch already-approved work."""
+        briefs, all_issues = [], []
+        if tech_audit is not None:
+            briefs.append(_format_audit_brief(tech_audit, "Technical Auditor"))
+            all_issues += tech_audit.get("issues", [])
+        if bus_audit is not None:
+            briefs.append(_format_audit_brief(bus_audit, "Business Auditor"))
+            all_issues += bus_audit.get("issues", [])
 
-        all_issues = tech_audit.get("issues", []) + bus_audit.get("issues", [])
         critical = [i for i in all_issues if i.get("severity") == "CRITICAL"]
         high = [i for i in all_issues if i.get("severity") == "HIGH"]
+
+        only_note = ""
+        if tech_audit is None:
+            only_note = ("The Technical Auditor already APPROVED — do NOT modify working code or "
+                         "tests; fix ONLY the business issues below.\n")
+        elif bus_audit is None:
+            only_note = ("The Business Auditor already APPROVED — do NOT change scope or files it "
+                         "accepted; fix ONLY the technical issues below.\n")
 
         header = (
             f"# AUDIT REJECTED — Iteration {iteration}\n\n"
             f"**Executive summary:** {len(all_issues)} total issue(s) — "
             f"{len(critical)} CRITICAL, {len(high)} HIGH.\n"
-            "All issues must be resolved before the next iteration.\n"
-            "Each issue includes: what is wrong, why it matters, and exactly how to fix it.\n\n"
+            f"{only_note}"
+            "Resolve the issues below WITHOUT touching code unrelated to them.\n\n"
             "---\n"
         )
-
-        return header + "\n\n" + tech_brief + "\n\n---\n\n" + bus_brief
+        return header + "\n\n" + "\n\n---\n\n".join(briefs)
 
     def _run_backstop(self) -> Tuple[bool, str]:
         """Objectively verifies output: syntax-checks all .py files and runs tests.
