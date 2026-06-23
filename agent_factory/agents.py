@@ -269,6 +269,7 @@ def get_agent(role_name: str, model_name: str = None) -> Agent:
     _ro  = [read_project_file, list_project_files]
     role_map = {
         "pm":                (PM_INSTRUCTIONS,               DEFAULT_ANALYSIS_MODEL,   _rw),
+        "pm_interviewer":    (PM_INSTRUCTIONS,               DEFAULT_ANALYSIS_MODEL,   []),   # no write tools — discovery only
         "research":          (RESEARCH_INSTRUCTIONS,         DEFAULT_ANALYSIS_MODEL,   _rw),
         "architect":         (ARCHITECT_INSTRUCTIONS,        DEFAULT_REASONING_MODEL,  _rw),
         "prompt":            (PROMPT_ENGINEER_INSTRUCTIONS,  DEFAULT_FAST_MODEL,       _rw),

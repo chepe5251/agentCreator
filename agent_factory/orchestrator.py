@@ -6,7 +6,11 @@ from typing import Dict, Any, Tuple, List
 from agent_factory.config import MAX_AUDIT_ITERATIONS
 from agent_factory.agents import get_agent
 from agent_factory.memory import IterationMemory
-from agent_factory.tools import list_project_files, check_python_syntax, run_project_tests, lint_code
+import sys
+from agent_factory.tools import (
+    list_project_files, check_python_syntax, run_project_tests, lint_code,
+    install_dependencies,
+)
 
 
 def _balanced_json(text: str, start: int) -> str | None:
@@ -49,6 +53,34 @@ def _extract_json_block(text: str) -> dict | None:
             continue
 
     return None
+
+
+def _extract_json_array(text: str) -> list:
+    """Extracts a JSON array of objects from model text (the architect's build plan)."""
+    for raw in reversed(re.findall(r"```json\s*(.*?)\s*```", text, re.DOTALL)):
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            continue
+    start = text.find("[")
+    while start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "[":
+                depth += 1
+            elif text[i] == "]":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        data = json.loads(text[start:i + 1])
+                        if isinstance(data, list):
+                            return data
+                    except Exception:
+                        break
+        start = text.find("[", start + 1)
+    return []
 
 
 def parse_auditor_response(text: str) -> Dict[str, Any]:
@@ -121,6 +153,7 @@ class EnterpriseOrchestrator:
         self.project_prompt = project_prompt
         self.memory = IterationMemory(run_id)
         self.requirements_brief = ""
+        self.build_plan = []
         from agent_factory.config import OUTPUT_DIR
         from agent_factory.tools import set_active_output
         self.output_dir = OUTPUT_DIR / run_id
@@ -142,7 +175,12 @@ class EnterpriseOrchestrator:
             
             # Step 1: Build Phase
             deliverables = await self._phase_build(iteration, latest_feedback)
-            
+
+            # Install deps deterministically so review, audit, and backstop all use a live venv
+            if any(f == "requirements.txt" for f in list_project_files()):
+                print("[*] Installing dependencies into the run venv...")
+                print("    " + install_dependencies())
+
             # Step 2: Review / Analyze Phase
             reviews = await self._phase_review(iteration, deliverables)
             
@@ -204,6 +242,17 @@ class EnterpriseOrchestrator:
         summary = self._generate_final_summary(approved, iteration - 1)
         return approved, summary
 
+    def _extract_build_plan(self, text: str) -> list:
+        """Parses the architect's [{file, purpose}] build plan from its output."""
+        plan = []
+        for item in _extract_json_array(text):
+            if isinstance(item, dict) and item.get("file"):
+                plan.append({
+                    "file": str(item["file"]).strip(),
+                    "purpose": str(item.get("purpose", "")).strip(),
+                })
+        return plan
+
     async def _phase_build(self, iteration: int, audit_feedback: str) -> Dict[str, str]:
         """Runs the build phase where PM, Researchers, Architects, and Developers write output."""
         deliverables = {}
@@ -230,12 +279,23 @@ class EnterpriseOrchestrator:
                 )
                 deliverables["research"] = await response.text()
 
-            # Architect
+            # Architect — designs the architecture AND the concrete file plan for THIS project
             async with get_agent("architect") as arch:
                 response = await arch.chat(
-                    "Based on 'spec.md' and 'research.md', design the overall architecture and save it in 'architecture.md'."
+                    "Based on 'spec.md' and 'research.md', design the overall architecture and save it in "
+                    "'architecture.md'.\n\n"
+                    "Then decide the exact set of source files the developers must create to implement THIS "
+                    "specific project, derived from the architecture — NOT a fixed template. Do NOT assume the "
+                    "project needs a database, RAG, or a memory module unless the spec actually requires it.\n"
+                    "At the END of your response, output ONLY a JSON array of the files to build, each as "
+                    '{"file": "<path>", "purpose": "<what this file does>"}. Example: '
+                    '[{"file":"src/main.py","purpose":"CLI entry point and main loop"},'
+                    '{"file":"src/auditor.py","purpose":"tool-based checks returning a verdict"}]. '
+                    "Include the entry point and every module the project needs."
                 )
-                deliverables["architect"] = await response.text()
+                arch_text = await response.text()
+                deliverables["architect"] = arch_text
+                self.build_plan = self._extract_build_plan(arch_text)
 
             # Prompt Engineer
             async with get_agent("prompt") as pe:
@@ -244,25 +304,25 @@ class EnterpriseOrchestrator:
                 )
                 deliverables["prompt"] = await response.text()
 
-            # Developers: Backend, RAG, Memory
-            print("[*] Phase: Coding (Backend, RAG, Memory)")
-            async with get_agent("backend") as backend:
-                response = await backend.chat(
-                    "Create the runnable backend code (e.g. 'src/main.py', 'requirements.txt') based on the architecture."
-                )
-                deliverables["backend"] = await response.text()
+            # Developers: build each file from the architect's plan (generalist developer per module)
+            print("[*] Phase: Coding (per architecture plan)")
+            if not self.build_plan:
+                print("[!] No structured build plan from architect; using single-file fallback.")
+                self.build_plan = [{"file": "src/main.py", "purpose": "Entry point implementing the spec"}]
 
-            async with get_agent("rag") as rag:
-                response = await rag.chat(
-                    "If the project requires document search or retrieval, write the RAG module (e.g. 'src/rag.py')."
-                )
-                deliverables["rag"] = await response.text()
-
-            async with get_agent("memory") as memory:
-                response = await memory.chat(
-                    "If the project requires state persistence or memory, write the memory module (e.g. 'src/memory.py')."
-                )
-                deliverables["memory"] = await response.text()
+            for module in self.build_plan:
+                f, purpose = module["file"], module["purpose"]
+                print(f"    - building {f}")
+                async with get_agent("backend") as dev:
+                    response = await dev.chat(
+                        f"Implement the file '{f}' for this project.\n"
+                        f"Purpose of this file: {purpose}\n\n"
+                        "Read 'spec.md' and 'architecture.md' first, and read any already-created source files "
+                        "this one depends on. Write complete, runnable code — no placeholders, no TODOs, no "
+                        "NotImplementedError. If this file needs third-party packages, add them to "
+                        "'requirements.txt' (real pip packages only, never stdlib modules like json/os/typing)."
+                    )
+                    deliverables[f"dev::{f}"] = await response.text()
                 
         else:
             # Fix phase
@@ -283,37 +343,16 @@ class EnterpriseOrchestrator:
                 deliverables["pm"] = await response.text()
                 pm_instructions = deliverables["pm"]
 
-            # Specialists correct code using both PM instructions AND the full audit brief
-            async with get_agent("backend") as backend:
-                response = await backend.chat(
-                    f"## PM Instructions\n{pm_instructions}\n\n"
-                    f"## Full Audit Report\n{audit_feedback}\n\n"
-                    "Fix ONLY the issues that belong to the backend. "
-                    "Read the current files before modifying them. "
-                    "Implement ALL corrections listed for backend files, including "
-                    "the exact code suggested by the auditors. Do not leave any TODOs unimplemented."
+            # One generalist developer applies ALL fixes across whatever files are affected
+            async with get_agent("backend") as dev:
+                response = await dev.chat(
+                    f"## PM correction plan\n{pm_instructions}\n\n"
+                    f"## Full audit report\n{audit_feedback}\n\n"
+                    "Apply ALL fixes listed. Read each file with read_project_file before modifying it. "
+                    "Implement every correction with concrete code — no TODOs, no placeholders. "
+                    "You may edit any file in the project."
                 )
-                deliverables["backend"] = await response.text()
-
-            async with get_agent("rag") as rag:
-                response = await rag.chat(
-                    f"## PM Instructions\n{pm_instructions}\n\n"
-                    f"## Full Audit Report\n{audit_feedback}\n\n"
-                    "Fix ONLY the issues that belong to the RAG module. "
-                    "Read the current files before modifying them. "
-                    "Implement ALL corrections listed for RAG files. Do not leave any TODOs unimplemented."
-                )
-                deliverables["rag"] = await response.text()
-
-            async with get_agent("memory") as memory:
-                response = await memory.chat(
-                    f"## PM Instructions\n{pm_instructions}\n\n"
-                    f"## Full Audit Report\n{audit_feedback}\n\n"
-                    "Fix ONLY the issues that belong to the memory module. "
-                    "Read the current files before modifying them. "
-                    "Implement ALL corrections listed for memory files. Do not leave any TODOs unimplemented."
-                )
-                deliverables["memory"] = await response.text()
+                deliverables["developer"] = await response.text()
                 
         return deliverables
 
@@ -419,26 +458,30 @@ class EnterpriseOrchestrator:
 
     async def _phase_discovery(self) -> None:
         """Interactive discovery: the PM interviews the user before the build phase."""
+        if not sys.stdin.isatty():
+            self.requirements_brief = "(Non-interactive run — building from the initial prompt only.)"
+            return
+
         print("\n=================== DISCOVERY ===================")
         print("[*] The PM will ask clarifying questions before writing any spec.")
 
-        transcript, MAX_ROUNDS = [], 2
+        transcript, MAX_ROUNDS = [], 1
         ctx = f"User's initial idea: '{self.project_prompt}'"
 
         for _ in range(MAX_ROUNDS):
-            async with get_agent("pm") as pm:
+            async with get_agent("pm_interviewer") as pm:
                 response = await pm.chat(
                     f"{ctx}\n\n"
                     "You are interviewing the user to fully understand what they want to build "
                     "BEFORE any spec is written. Ask every clarifying question you genuinely need "
                     "(scope, target users, must-have features, tech/runtime constraints, data "
-                    "sources, integrations, success criteria). Do NOT write any files.\n"
+                    "sources, integrations, success criteria).\n"
                     "Output ONLY a JSON array of question strings, e.g. "
                     '["Question 1?", "Question 2?"]. If you already have enough info, output exactly [].'
                 )
                 raw = await response.text()
 
-            questions = self._parse_questions(raw)
+            questions = self._parse_questions(raw)[:5]   # tope duro de 5 preguntas totales
             if not questions:
                 break
             qa = await self._ask_questions(questions)
