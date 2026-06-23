@@ -91,14 +91,23 @@ Your job is to perform a thorough technical review of ALL files produced by the 
 - Security: credential exposure, prompt injection, unsafe deserialization, insecure dependencies
 - Testing: unit tests, integration tests, mocking LLM calls properly
 
-## Mandatory Review Process
-1. Call list_project_files to see all generated files.
-2. Call read_project_file on EVERY SINGLE file — do not skip any file.
-3. Call check_python_syntax on every .py file found.
-4. Call lint_code(".") to catch style and logic issues objectively.
-5. Call run_program to verify the entry point actually executes without errors.
-6. Call run_project_tests and analyze the full output.
-7. Evaluate each file for: correctness, completeness, AI agent best practices, security, and testability.
+## Mandatory Review Process — follow this ORDER to stay within your tool budget
+
+**Step 1 — Automated tools first (these are fast single calls, do them before reading anything):**
+1. Call list_project_files to inventory all files.
+2. Call check_python_syntax on EVERY .py file in the list.
+3. Call lint_code(".") for objective quality check.
+4. Call run_project_tests and record the result (PASSED / FAILED / missing).
+5. Call run_program with the most likely entry point (e.g. src/main.py).
+
+**Step 2 — Read source files (prioritize, do NOT read every file if there are many):**
+6. Read spec.md and requirements.txt first.
+7. Read every .py file under src/ — these are the most important.
+8. Skip generated docs, cost reports, and security markdown unless you have tool budget left.
+
+**Step 3 — Verdict:**
+9. Evaluate all results against the Building-an-Agent rubric and rejection rules below.
+10. Emit the structured JSON verdict immediately — do not call more tools after this.
 
 ## Issue Severity Levels
 - CRITICAL: Prevents the system from running at all (syntax errors, missing imports, wrong API calls)
@@ -251,20 +260,23 @@ def get_agent(role_name: str, model_name: str = None) -> Agent:
         "security":          (SECURITY_INSTRUCTIONS,         DEFAULT_ANALYSIS_MODEL,   _rw),
         "devops":            (DEVOPS_INSTRUCTIONS,           DEFAULT_FAST_MODEL,       _rw),
         "cost":              (COST_INSTRUCTIONS,             DEFAULT_ANALYSIS_MODEL,   _rw),
-        "technical_auditor": (TECHNICAL_AUDITOR_INSTRUCTIONS, DEFAULT_REASONING_MODEL, _ro + [check_python_syntax, lint_code, run_program, run_project_tests]),
-        "business_auditor":  (BUSINESS_AUDITOR_INSTRUCTIONS,  DEFAULT_ANALYSIS_MODEL,  _ro),
+        "technical_auditor": (TECHNICAL_AUDITOR_INSTRUCTIONS, DEFAULT_REASONING_MODEL, _ro + [check_python_syntax, lint_code, run_program, run_project_tests], 50),
+        "business_auditor":  (BUSINESS_AUDITOR_INSTRUCTIONS,  DEFAULT_ANALYSIS_MODEL,  _ro, 50),
     }
     
     if role_name not in role_map:
         raise ValueError(f"Unknown agent role: {role_name}")
         
-    instructions, default_m, tools = role_map[role_name]
+    entry = role_map[role_name]
+    instructions, default_m, tools = entry[0], entry[1], entry[2]
+    max_rounds = entry[3] if len(entry) > 3 else 25
     m = model_name if model_name else default_m
-    
+
     config = AgentConfig(
         model=m,
         system_instructions=instructions,
         tools=tools,
+        max_tool_rounds=max_rounds,
     )
-    
+
     return Agent(config=config)

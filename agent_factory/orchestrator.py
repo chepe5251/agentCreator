@@ -53,6 +53,24 @@ def _extract_json_block(text: str) -> dict | None:
 
 def parse_auditor_response(text: str) -> Dict[str, Any]:
     """Extracts the structured audit JSON from model output."""
+    # Detect truncated response: agent ran out of tool rounds before producing verdict
+    if "maximum tool" in text.lower() or (
+        text.strip().startswith("{") and '"function"' in text and '"status"' not in text
+    ):
+        return {
+            "status": "REJECTED",
+            "summary": "Auditor ran out of tool rounds before producing a verdict.",
+            "feedback": "Auditor exhausted tool call budget. Increase max_tool_rounds or reduce files to audit.",
+            "issues": [{
+                "file": "system",
+                "severity": "HIGH",
+                "problem": "Auditor did not complete its analysis.",
+                "why": "The agent hit the tool call limit before reading all files and emitting a verdict.",
+                "fix": "Reduce the number of files in output/ or increase max_tool_rounds for the auditor.",
+                "expected": "A structured JSON verdict with status, summary, issues[], and feedback.",
+            }],
+        }
+
     data = _extract_json_block(text)
     if data is not None:
         data.setdefault("feedback", data.get("summary", text))

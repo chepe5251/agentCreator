@@ -7,7 +7,7 @@ from litellm import acompletion
 
 from agent_factory.config import validate_llm_setup
 
-MAX_TOOL_ROUNDS = 25
+DEFAULT_MAX_TOOL_ROUNDS = 25
 _PYTHON_TO_JSON_TYPE = {
     str: "string",
     int: "integer",
@@ -22,6 +22,7 @@ class AgentConfig:
     model: str
     system_instructions: str
     tools: List[Callable[..., Any]] = field(default_factory=list)
+    max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS
 
 
 class ChatResponse:
@@ -145,7 +146,7 @@ class Agent:
         self._messages.append({"role": "user", "content": prompt})
         tools = [_function_to_tool(tool) for tool in self._config.tools]
 
-        for _ in range(MAX_TOOL_ROUNDS):
+        for _ in range(self._config.max_tool_rounds):
             request_kwargs = {
                 "model": self._config.model,
                 "messages": self._messages,
