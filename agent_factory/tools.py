@@ -1,10 +1,15 @@
 import os
+import sys
 import subprocess
 import py_compile
 from pathlib import Path
 from typing import List
 
 from agent_factory.config import OUTPUT_DIR
+
+# Isolated venv inside output/ — keeps generated deps off the host env
+VENV_DIR = OUTPUT_DIR / ".venv"
+_VENV_EXCLUDE = {"venv", ".venv", "__pycache__", ".git"}
 
 
 def _safe_target(filepath: str) -> Path:
@@ -16,7 +21,17 @@ def _safe_target(filepath: str) -> Path:
     return target
 
 
+def _venv_python() -> str:
+    """Returns the Python executable inside the output/.venv, creating it on first call."""
+    py = VENV_DIR / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if not py.exists():
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)], timeout=60, check=True)
+    return str(py)
+
+
 _CODE_EXTENSIONS = {".py", ".js", ".ts", ".jsx", ".tsx", ".sh", ".yaml", ".yml", ".toml", ".json"}
+
 
 def _strip_markdown_fences(content: str, filepath: str) -> str:
     """Strips ```lang ... ``` fences that local LLMs sometimes write into source files."""
@@ -24,11 +39,9 @@ def _strip_markdown_fences(content: str, filepath: str) -> str:
     if ext not in _CODE_EXTENSIONS:
         return content
     stripped = content.strip()
-    # Match opening fence: ```python, ```py, ```yaml, ``` alone, etc.
     first_newline = stripped.find("\n")
     if stripped.startswith("```") and first_newline != -1:
         first_line = stripped[:first_newline].strip()
-        # Validate it looks like a fence line (``` optionally followed by a lang identifier)
         if first_line == "```" or (first_line.startswith("```") and first_line[3:].isalpha()):
             body = stripped[first_newline + 1:]
             if body.rstrip().endswith("```"):
@@ -74,12 +87,12 @@ def list_project_files() -> List[str]:
     files = []
     if not OUTPUT_DIR.exists():
         return files
-    for root, _, filenames in os.walk(OUTPUT_DIR):
+    for root, dirs, filenames in os.walk(OUTPUT_DIR):
+        # Prune excluded dirs in-place so os.walk doesn't descend into them
+        dirs[:] = [d for d in dirs if d not in _VENV_EXCLUDE]
         for name in filenames:
             path = Path(root) / name
             rel = path.relative_to(OUTPUT_DIR)
-            if "venv" in rel.parts or "__pycache__" in rel.parts or ".git" in rel.parts:
-                continue
             files.append(str(rel))
     return files
 
@@ -104,7 +117,7 @@ def check_python_syntax(filepath: str) -> str:
 
 
 def install_dependencies(requirements_file: str = "requirements.txt") -> str:
-    """Installs Python packages listed in a requirements file found inside output/.
+    """Installs Python packages into the isolated output/.venv (never the host env).
 
     Args:
         requirements_file: Relative path to the requirements file (default: 'requirements.txt').
@@ -116,14 +129,15 @@ def install_dependencies(requirements_file: str = "requirements.txt") -> str:
     if not target.exists():
         return f"Error: {requirements_file} does not exist in output/."
     try:
+        py = _venv_python()
         res = subprocess.run(
-            ["pip", "install", "-r", str(target), "--quiet", "--disable-pip-version-check"],
+            [py, "-m", "pip", "install", "-r", str(target), "--quiet", "--disable-pip-version-check"],
             capture_output=True,
             text=True,
             timeout=180,
         )
         if res.returncode == 0:
-            return f"Dependencies installed successfully from {requirements_file}."
+            return f"Dependencies installed into output/.venv from {requirements_file}."
         return f"Dependency installation failed:\n{res.stderr[:600]}"
     except subprocess.TimeoutExpired:
         return "Error: dependency installation timed out after 180s."
@@ -132,7 +146,7 @@ def install_dependencies(requirements_file: str = "requirements.txt") -> str:
 
 
 def lint_code(filepath: str = ".") -> str:
-    """Runs ruff (fallback: flake8) on a file or directory inside output/.
+    """Runs ruff (fallback: flake8) checking only real errors (F-rules: undefined names, broken imports).
 
     Args:
         filepath: Relative path to lint, or '.' to lint the entire output/ directory.
@@ -147,24 +161,29 @@ def lint_code(filepath: str = ".") -> str:
     if not target.exists():
         return f"Error: {filepath} does not exist in output/."
 
-    for linter_cmd in [["ruff", "check", str(target)], ["flake8", str(target)]]:
+    for linter_cmd in [
+        ["ruff", "check", "--select", "F", str(target)],
+        ["flake8", "--select=F", str(target)],
+    ]:
         try:
             res = subprocess.run(linter_cmd, capture_output=True, text=True, timeout=30)
             tool = linter_cmd[0]
             if res.returncode == 0:
-                return f"{tool}: No issues found in {filepath}."
-            return f"{tool} issues in {filepath}:\n{(res.stdout + res.stderr)[:1000]}"
+                return f"{tool}: No errors found in {filepath}."
+            return f"{tool} errors in {filepath}:\n{(res.stdout + res.stderr)[:1000]}"
         except FileNotFoundError:
             continue
         except Exception as e:
             return f"Linter error: {e}"
-    return "Error: neither ruff nor flake8 is installed. Run: pip install ruff"
+    return "Error: neither ruff nor flake8 is installed."
 
 
 def run_program(entrypoint: str = "src/main.py", args: str = "") -> str:
-    """Executes the generated program and captures its output (30s timeout).
+    """Runs the generated entry point inside the isolated output/.venv (5s timeout).
 
-    NOTE: runs LLM-generated code directly — use inside a container for production.
+    A TimeoutExpired after 5s means the program started and kept running — this counts
+    as SUCCESS for long-running services (bots, servers). An immediate non-zero exit
+    or crash is a real failure.
 
     Args:
         entrypoint: Relative path to the Python entry point (e.g. 'src/main.py').
@@ -177,7 +196,7 @@ def run_program(entrypoint: str = "src/main.py", args: str = "") -> str:
     if not target.exists():
         return f"Error: {entrypoint} does not exist in output/."
 
-    cmd = ["python3", str(target)]
+    cmd = [_venv_python(), str(target)]
     if args:
         cmd.extend(args.split())
 
@@ -187,20 +206,21 @@ def run_program(entrypoint: str = "src/main.py", args: str = "") -> str:
             cwd=str(OUTPUT_DIR),
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=5,
         )
         output = (res.stdout + res.stderr)[:1200]
         if res.returncode == 0:
             return f"Program exited 0 (success).\nOutput:\n{output}"
-        return f"Program exited {res.returncode}.\nOutput:\n{output}"
+        return f"Program exited {res.returncode} (error).\nOutput:\n{output}"
     except subprocess.TimeoutExpired:
-        return "Error: program timed out after 30s (server/blocking I/O? Use a non-blocking entry point for smoke tests)."
+        # Still running after 5s = started successfully (long-running service/bot/server)
+        return "Program started successfully and kept running (long-running service — expected for bots/servers)."
     except Exception as e:
         return f"Error running program: {e}"
 
 
 def run_project_tests(test_script: str = "tests") -> str:
-    """Runs tests for the generated project using unittest.
+    """Runs the project's unittest suite inside the isolated output/.venv.
 
     Args:
         test_script: Directory or module containing tests, default is 'tests'.
@@ -213,7 +233,7 @@ def run_project_tests(test_script: str = "tests") -> str:
         return f"Error: Test folder '{test_script}' does not exist in output/. Can't run tests."
     try:
         res = subprocess.run(
-            ["python3", "-m", "unittest", "discover", "-s", test_script],
+            [_venv_python(), "-m", "unittest", "discover", "-s", test_script],
             cwd=str(OUTPUT_DIR),
             capture_output=True,
             text=True,

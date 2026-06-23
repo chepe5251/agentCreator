@@ -25,6 +25,14 @@ ARCHITECT_INSTRUCTIONS = """You are the AI Architect.
 Your responsibility is to design the system topology, agent flows, and dependencies.
 Create an architecture document ('architecture.md') including Mermaid diagrams showing components and their relations.
 Use write_project_file to save the architecture design.
+
+## Building-an-Agent Quality Bar (your design will be audited against this)
+- Agent loops MUST have an explicit cap (e.g. `for _ in range(max_rounds)`) — no `while True` without a break.
+- Every LLM call must include `timeout` and `num_retries` parameters.
+- JSON from LLM must be parsed with a balanced-brace extractor, never `re.search(r'\\{.*?\\}', ...)`.
+- Tool functions must be type-annotated, return error strings (never raise), and validate file paths against a sandbox dir.
+- No hardcoded absolute paths (`/home/...`). No credentials in code — only os.getenv().
+- Architecture must include a requirements.txt and a runnable entry point. No TODO placeholders.
 """
 
 PROMPT_ENGINEER_INSTRUCTIONS = """You are the Prompt Engineer.
@@ -38,6 +46,16 @@ Your responsibility is to design database models, APIs, and the core Python logi
 Write working, clean, and modular code files (e.g. 'src/main.py', 'src/db.py', 'requirements.txt') as needed.
 Write real code, not pseudocode. Handle errors gracefully.
 Use write_project_file to save your files.
+
+## Building-an-Agent Quality Bar (your code will be rejected if any of these fail)
+- Agent loops MUST be bounded: `for _ in range(max_rounds)`, never unbounded `while True`.
+- Every LLM call must pass `timeout=60` (or higher) and `num_retries=2` (or use a wrapper that does this).
+- Parse LLM JSON with a balanced-brace extractor; NEVER use `re.search(r'\\{.*?\\}', text)` — it truncates nested objects.
+- Validate parsed JSON has required fields before accessing them (KeyError = crash).
+- Tool functions: type-annotate all parameters, catch all exceptions and return an error string, validate paths with `Path.resolve()` inside a sandbox dir.
+- No hardcoded paths like `/home/user/...`. Credentials via `os.getenv()` only.
+- Always produce a `requirements.txt` listing every imported third-party package.
+- No TODO comments, no `pass` stubs, no pseudocode — every function must be fully implemented.
 """
 
 RAG_INSTRUCTIONS = """You are the RAG Specialist.
@@ -147,7 +165,7 @@ REJECTED if ANY of the following are true:
 
 **Reliability**
 - Any model call lacks `timeout` or `num_retries`
-- Structured output (JSON) parsed with non-greedy regex `\{.*?\}` — breaks on nested objects
+- Structured output (JSON) parsed with non-greedy regex `\\{.*?\\}` — breaks on nested objects
 - Parsed JSON object not validated for required fields before use
 
 **Tool contract**
