@@ -6,6 +6,7 @@ from typing import Dict, Any, Tuple, List
 from agent_factory.config import MAX_AUDIT_ITERATIONS
 from agent_factory.agents import get_agent
 from agent_factory.memory import IterationMemory
+from agent_factory.project_state import ProjectState
 import sys
 from agent_factory.tools import (
     list_project_files, check_python_syntax, run_project_tests, lint_code,
@@ -158,7 +159,8 @@ class EnterpriseOrchestrator:
         from agent_factory.tools import set_active_output
         self.output_dir = OUTPUT_DIR / run_id
         set_active_output(self.output_dir)
-        
+        self.state = None   # initialized in run() once requirements are gathered
+
     async def run(self) -> Tuple[bool, str]:
         """Runs the orchestrator loop. Returns (is_approved, summary_report)."""
         iteration = 1
@@ -171,10 +173,12 @@ class EnterpriseOrchestrator:
         print(f"[*] Project Prompt: {self.project_prompt}")
         print(f"[*] Output dir: {self.output_dir}")
         await self._phase_discovery()
+        self.state = ProjectState(self.output_dir, self.project_prompt, self.requirements_brief)
 
         while not approved and iteration <= MAX_AUDIT_ITERATIONS:
             print(f"\n=================== ITERATION {iteration} ===================")
-            
+            self.state.set_iteration(iteration)
+
             # Step 1: Build Phase
             deliverables = await self._phase_build(iteration, latest_feedback)
 
@@ -189,6 +193,10 @@ class EnterpriseOrchestrator:
             # Step 3: Audit Phase
             tech_audit, bus_audit = await self._phase_audit(iteration)
             
+            # Record audit results in shared project state
+            self.state.record_audit(iteration, "technical", tech_audit.get("status"), tech_audit.get("issues", []))
+            self.state.record_audit(iteration, "business", bus_audit.get("status"), bus_audit.get("issues", []))
+
             # Save results to memory
             self.memory.log_iteration(
                 iteration=iteration,
@@ -278,35 +286,41 @@ class EnterpriseOrchestrator:
                 })
         return plan
 
+    def _with_state(self, instruction: str) -> str:
+        """Prepends the shared project state to an agent instruction."""
+        if self.state is None:
+            return instruction
+        return self.state.as_briefing() + "\n" + instruction
+
     async def _phase_build(self, iteration: int, audit_feedback: str) -> Dict[str, str]:
         """Runs the build phase where PM, Researchers, Architects, and Developers write output."""
         deliverables = {}
         
         if iteration == 1:
             print("[*] Phase: Build (Initial Specification & Coding)")
-            
+
             # CEO / PM initial spec
             async with get_agent("pm") as pm:
-                response = await pm.chat(
+                response = await pm.chat(self._with_state(
                     f"The user wants to build the following project: '{self.project_prompt}'.\n\n"
                     f"Requirements gathered during discovery:\n{self.requirements_brief}\n\n"
                     "Analyze the requirements, define the scope, and create a specification in "
                     "'spec.md'. Honor the user's answers; where an answer says 'no preference', "
                     "choose sensibly and note the decision in the spec."
-                )
+                ))
                 deliverables["pm"] = await response.text()
 
             # Research
             async with get_agent("research") as research:
-                response = await research.chat(
+                response = await research.chat(self._with_state(
                     "Research the best technologies and libraries to fulfill 'spec.md'.\n"
                     "Write your conclusions in 'research.md'."
-                )
+                ))
                 deliverables["research"] = await response.text()
 
             # Architect — designs the architecture AND the concrete file plan for THIS project
             async with get_agent("architect") as arch:
-                response = await arch.chat(
+                response = await arch.chat(self._with_state(
                     f"The user's actual request is: '{self.project_prompt}'.\n"
                     "Design the system that fulfills THAT request specifically — NOT a generic "
                     "agent template. Read 'spec.md' and 'requirements.md' first and ground every "
@@ -325,16 +339,17 @@ class EnterpriseOrchestrator:
                     "Include the entry point and every file the project needs — source modules, and "
                     "ONLY IF genuinely required, deployment files or analysis docs (most local CLI "
                     "tools need neither)."
-                )
+                ))
                 arch_text = await response.text()
                 deliverables["architect"] = arch_text
                 self.build_plan = self._extract_build_plan(arch_text)
+                self.state.set_architecture(arch_text, self.build_plan)
 
             # Prompt Engineer
             async with get_agent("prompt") as pe:
-                response = await pe.chat(
+                response = await pe.chat(self._with_state(
                     "Design the prompt strategy and system instructions required for the project and save them in 'prompts.md'."
-                )
+                ))
                 deliverables["prompt"] = await response.text()
 
             # Developers: build each file from the architect's plan (generalist developer per module)
@@ -347,7 +362,7 @@ class EnterpriseOrchestrator:
                 f, purpose = module["file"], module["purpose"]
                 print(f"    - building {f}")
                 async with get_agent("backend") as dev:
-                    response = await dev.chat(
+                    response = await dev.chat(self._with_state(
                         f"Implement the file '{f}' for this project.\n"
                         f"Purpose of this file: {purpose}\n\n"
                         "Read 'spec.md' and 'architecture.md' first, and read any already-created source files "
@@ -358,16 +373,17 @@ class EnterpriseOrchestrator:
                         "parameters from the function signature; json.loads tool-call arguments before calling). "
                         "If this file needs third-party packages, add them to "
                         "'requirements.txt' (real pip packages only, never stdlib modules like json/os/typing)."
-                    )
+                    ))
                     deliverables[f"dev::{f}"] = await response.text()
-                
+                    self.state.record_contribution(f"dev:{f}", deliverables[f"dev::{f}"][:600])
+
         else:
             # Fix phase
             print(f"[*] Phase: Fix & Correct (Iteration {iteration})")
 
             # PM reviews the full audit brief and creates a correction plan
             async with get_agent("pm") as pm:
-                response = await pm.chat(
+                response = await pm.chat(self._with_state(
                     f"The auditors rejected the deliverable at iteration {iteration - 1}.\n\n"
                     f"{audit_feedback}\n\n"
                     "Your tasks:\n"
@@ -376,13 +392,13 @@ class EnterpriseOrchestrator:
                     "3. At the end of your response, write a '## TASKS PER SPECIALIST' section with concrete, "
                     "specific instructions for: Backend Engineer, RAG Specialist, and Memory Engineer. "
                     "Include the exact files to modify and the changes required based on the auditor feedback."
-                )
+                ))
                 deliverables["pm"] = await response.text()
                 pm_instructions = deliverables["pm"]
 
             # One generalist developer applies ALL fixes across whatever files are affected
             async with get_agent("backend") as dev:
-                response = await dev.chat(
+                response = await dev.chat(self._with_state(
                     f"## PM correction plan\n{pm_instructions}\n\n"
                     f"## Full audit report\n{audit_feedback}\n\n"
                     "Apply ALL fixes listed. For EACH file you change: FIRST read its current contents "
@@ -394,9 +410,9 @@ class EnterpriseOrchestrator:
                     "'pass', or 'for demonstration' comments — a file must only become MORE correct between "
                     "iterations, never lose functionality. If a file orchestrates other modules, actually "
                     "import and call them — no 'this would invoke ...' placeholder comments. No TODOs, no mock logic."
-                )
+                ))
                 deliverables["developer"] = await response.text()
-                
+
         return deliverables
 
     async def _phase_review(self, iteration: int, deliverables: Dict[str, str]) -> Dict[str, str]:
@@ -406,22 +422,22 @@ class EnterpriseOrchestrator:
         
         # QA creates test suite
         async with get_agent("qa") as qa:
-            response = await qa.chat(
+            response = await qa.chat(self._with_state(
                 "First call list_project_files to see what source files actually exist. Then write or "
                 "UPDATE automated tests in a SINGLE file 'tests/test_app.py' that exercise the ACTUAL "
                 "modules in src/ — never assumed modules like backend/RAG/memory if they don't exist. "
                 "Do NOT create new or duplicate test files (no *_updated, no temp_* files); edit "
                 "tests/test_app.py in place — read its current contents first and preserve existing "
                 "passing tests. Use unittest. Then run the run_project_tests tool."
-            )
+            ))
             reviews["qa"] = await response.text()
 
         # Security review
         async with get_agent("security") as sec:
-            response = await sec.chat(
+            response = await sec.chat(self._with_state(
                 "Perform a security review of the current code and write 'security_review.md'. "
                 "Look for credential leaks, command injection vulnerabilities, and insecure dependencies."
-            )
+            ))
             reviews["security"] = await response.text()
 
         return reviews
@@ -434,7 +450,7 @@ class EnterpriseOrchestrator:
 
         # Technical Auditor
         async with get_agent("technical_auditor") as ta:
-            response = await ta.chat(
+            response = await ta.chat(self._with_state(
                 f"## Original user requirement\n{self.project_prompt}\n\n"
                 f"## Files generated in this iteration ({iteration})\n{files_str}\n\n"
                 "## Instructions\n"
@@ -444,13 +460,13 @@ class EnterpriseOrchestrator:
                 "4. For each issue found, document: exact file, what is wrong, "
                 "why it matters, and how to fix it with concrete code.\n"
                 "5. Output your verdict using the required structured JSON (status, summary, issues[], positive[], feedback)."
-            )
+            ))
             ta_text = await response.text()
             ta_audit = parse_auditor_response(ta_text)
 
         # Business Auditor
         async with get_agent("business_auditor") as ba:
-            response = await ba.chat(
+            response = await ba.chat(self._with_state(
                 f"## Original user requirement\n{self.project_prompt}\n\n"
                 f"## Files generated in this iteration ({iteration})\n{files_str}\n\n"
                 "## Instructions\n"
@@ -460,7 +476,7 @@ class EnterpriseOrchestrator:
                 "4. For each issue, specify: affected area, what is missing or wrong, "
                 "why it matters to the user, and exactly how to fix it.\n"
                 "5. Output your verdict using the required structured JSON (status, summary, issues[], positive[], feedback)."
-            )
+            ))
             ba_text = await response.text()
             ba_audit = parse_auditor_response(ba_text)
 
