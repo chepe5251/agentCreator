@@ -5,6 +5,7 @@ from agent_factory.tools import (
     write_project_file, read_project_file, list_project_files,
     check_python_syntax, run_project_tests,
     install_dependencies, lint_code, run_program,
+    str_replace_in_file,
 )
 
 # SYSTEM INSTRUCTIONS FOR EACH SPECIALIST
@@ -235,7 +236,7 @@ def get_agent(role_name: str, model_name: str = None) -> Agent:
     #   backend    — installs deps after writing code so import errors surface immediately
     #   qa         — installs deps, lints, runs the program, then writes & runs tests
     #   technical_auditor — lints and runs program for objective proof beyond syntax checks
-    _rw  = [write_project_file, read_project_file, list_project_files]
+    _rw  = [write_project_file, read_project_file, list_project_files, str_replace_in_file]
     _ro  = [read_project_file, list_project_files]
     role_map = {
         "pm":                (PM_INSTRUCTIONS,               DEFAULT_ANALYSIS_MODEL,   _rw),

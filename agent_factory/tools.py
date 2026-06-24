@@ -80,6 +80,34 @@ def write_project_file(filepath: str, content: str) -> str:
     return f"File successfully written to: {filepath}"
 
 
+def str_replace_in_file(filepath: str, old_str: str, new_str: str) -> str:
+    """Replaces a UNIQUE occurrence of old_str with new_str in an existing file.
+    Prefer this for targeted fixes (one broken line or block) instead of rewriting the
+    whole file, which avoids regressing code that already works.
+
+    Args:
+        filepath: Relative path of the file to edit.
+        old_str: Exact text to find (must appear EXACTLY ONCE, including indentation).
+        new_str: Text to replace it with.
+    """
+    try:
+        target = _safe_target(filepath)
+    except ValueError as e:
+        return f"Error: {e}"
+    if not target.exists():
+        return f"Error: {filepath} does not exist."
+    content = target.read_text(encoding="utf-8")
+    n = content.count(old_str)
+    if n == 0:
+        return (f"Error: old_str not found in {filepath}. Read the file again with "
+                "read_project_file and copy the exact text (including indentation) to replace.")
+    if n > 1:
+        return (f"Error: old_str appears {n} times in {filepath}; it must match exactly once. "
+                "Include more surrounding lines to make it unique.")
+    target.write_text(content.replace(old_str, new_str, 1), encoding="utf-8")
+    return f"Replaced 1 occurrence in {filepath}."
+
+
 def read_project_file(filepath: str) -> str:
     """Reads the contents of a file in the generated project directory.
 
