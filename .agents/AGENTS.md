@@ -12,26 +12,49 @@ Este documento define las reglas de comportamiento, roles y flujo de trabajo par
 7. **Bucle de Mejora:** Si un auditor rechaza una propuesta, se debe iniciar un ciclo de corrección y mejora. Max 10 iteraciones.
 
 ## Estructura Organizacional y Roles
-*   **CEO / Project Manager:** Define alcance, objetivos, coordina especialistas.
-*   **Research Lead:** Investiga tecnologías, frameworks (ej. Google Antigravity SDK) y mejores prácticas.
-*   **AI Architect:** Diseña el flujo de agentes, la topología, herramientas y memoria.
-*   **Prompt Engineer:** Diseña system prompts, políticas de comportamiento y guardrails.
-*   **Backend Engineer:** Define APIs, bases de datos y estructura de código.
-*   **RAG Specialist:** Diseña la estrategia de embeddings, almacenamiento vectorial e ingesta.
-*   **Memory Engineer:** Diseña memoria a corto y largo plazo.
-*   **QA Engineer:** Diseña planes de pruebas, casos límite y verificaciones.
-*   **Security Engineer:** Realiza revisiones de seguridad, permisos y control de herramientas.
-*   **DevOps Engineer:** Diseña despliegue (Docker, CI/CD), monitoreo y observabilidad.
-*   **Cost Optimization Engineer:** Minimiza costos de tokens, optimiza llamadas a LLMs.
-*   **Technical Auditor:** Revisa la viabilidad técnica. Solo aprueba/rechaza.
-*   **Business Auditor:** Revisa la alineación con las necesidades del negocio. Solo aprueba/rechaza.
 
-## Ciclo de Trabajo
-1.   **Fase 1:** Análisis del problema.
-2.   **Fase 2:** Investigación.
-3.   **Fase 3:** Diseño arquitectónico.
-4.   **Fase 4:** Diseño de prompts.
-5.   **Fase 5:** Diseño técnico (Backend/RAG/Memory).
-6.   **Fase 6:** QA e Infraestructura.
-7.   **Fase 7:** Auditoría Técnica.
-8.   **Fase 8:** Auditoría de Negocio.
+### Roles del pipeline estándar (se ejecutan en cada corrida)
+*   **CEO / Project Manager (`pm`):** Define alcance, objetivos, coordina especialistas. En el fix loop escribe el plan de corrección.
+*   **PM Interviewer (`pm_interviewer`):** Entrevista al usuario durante el discovery; solo lee, no escribe archivos.
+*   **Research Lead (`research`):** Investiga tecnologías, frameworks y mejores prácticas.
+*   **AI Architect (`architect`):** Diseña la topología, el flujo y decide qué archivos construir para ESTE proyecto específico.
+*   **Prompt Engineer (`prompt`):** Diseña system prompts, políticas de comportamiento y guardrails.
+*   **Backend Engineer (`backend`):** Construye cada archivo del plan del architect; en el fix loop aplica todas las correcciones.
+*   **QA Engineer (`qa`):** Escribe y actualiza los tests unitarios basándose en los módulos reales del proyecto.
+*   **Security Engineer (`security`):** Realiza revisiones de seguridad, permisos y control de herramientas.
+*   **Technical Auditor (`technical_auditor`):** Revisa viabilidad técnica, sintaxis, tests y calidad del código. Solo aprueba/rechaza.
+*   **Business Auditor (`business_auditor`):** Revisa alineación con los requisitos del usuario. Solo aprueba/rechaza.
+
+### Roles bajo demanda (solo se invocan si el plan del architect los requiere)
+*   **RAG Specialist (`rag`):** Diseña la estrategia de embeddings, almacenamiento vectorial e ingesta. Solo si el spec lo pide.
+*   **Memory Engineer (`memory`):** Diseña memoria a corto y largo plazo. Solo si el spec lo pide.
+*   **DevOps Engineer (`devops`):** Diseña despliegue (Docker, CI/CD), monitoreo y observabilidad. Solo si el proyecto necesita containerización.
+*   **Cost Optimization Engineer (`cost`):** Minimiza costos de tokens, optimiza llamadas a LLMs. Solo si se solicita análisis de costos.
+
+## Ciclo de Trabajo (flujo real de 4 fases)
+
+### Fase 0 — Discovery (pre-iteración)
+- `pm_interviewer` entrevista al usuario (máx. 1 ronda, máx. 5 preguntas).
+- Las respuestas se guardan en `requirements.md`.
+
+### Fase 1 — Build
+- `pm` escribe `spec.md` con el alcance y las decisiones del proyecto.
+- `research` escribe `research.md` con las tecnologías recomendadas.
+- `architect` diseña la arquitectura (`architecture.md`) y emite el plan de archivos: lista exacta de módulos a construir para ESTE proyecto.
+- `prompt` escribe `prompts.md` con las instrucciones del sistema.
+- `backend` implementa cada archivo del plan del architect (un agente por módulo).
+
+### Fase 2 — Review
+- `qa` escribe/actualiza `tests/test_app.py` con tests sobre los módulos reales en `src/`.
+- `security` revisa el código y escribe `security_review.md`.
+
+### Fase 3 — Audit + Backstop
+- `technical_auditor` lee todos los archivos, corre syntax checks y tests; emite veredicto JSON.
+- `business_auditor` verifica cobertura de requisitos del usuario; emite veredicto JSON.
+- **Backstop** (objetivo, sin LLM): syntax check de todos los `.py`, lint, y ejecución de tests.
+- Si ambos auditores aprueban y el backstop pasa → **APPROVED**.
+- Si alguno rechaza → fix loop: `pm` escribe plan de corrección, `backend` aplica todos los fixes.
+
+### Convergencia
+- Las aprobaciones se latchean entre iteraciones: una vez que un auditor aprueba, no se le vuelve a pedir feedback sobre lo mismo si el backstop sigue pasando.
+- El feedback al developer se limita a los auditores que aún rechazan, para no regresar código ya aprobado.

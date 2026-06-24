@@ -1,8 +1,10 @@
 import unittest
 import shutil
 import os
+from pathlib import Path
 from agent_factory.orchestrator import parse_auditor_response
 from agent_factory.memory import IterationMemory
+from agent_factory.project_state import ProjectState
 from agent_factory.tools import write_project_file, read_project_file, check_python_syntax
 from agent_factory.config import OUTPUT_DIR, LOGS_DIR
 
@@ -161,6 +163,42 @@ class TestTools(unittest.TestCase):
         out_path = OUTPUT_DIR / fence_file
         if out_path.exists():
             os.remove(out_path)
+
+
+class TestProjectState(unittest.TestCase):
+
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp())
+        self.state = ProjectState(self.tmp, "build a calculator", "no extra requirements")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_initial_briefing_contains_prompt(self):
+        briefing = self.state.as_briefing()
+        self.assertIn("build a calculator", briefing)
+
+    def test_set_architecture_reflected_in_briefing(self):
+        self.state.set_architecture("Use clean architecture", [{"file": "src/main.py", "purpose": "entry point"}])
+        briefing = self.state.as_briefing()
+        self.assertIn("src/main.py", briefing)
+        self.assertIn("Use clean architecture", briefing)
+
+    def test_record_contribution_reflected_in_briefing(self):
+        self.state.record_contribution("dev:src/main.py", "Implemented src/main.py: entry point")
+        briefing = self.state.as_briefing()
+        self.assertIn("dev:src/main.py", briefing)
+
+    def test_record_audit_reflected_in_next_iteration_briefing(self):
+        self.state.set_iteration(1)
+        self.state.record_audit(1, "technical", "REJECTED", [
+            {"severity": "HIGH", "file": "src/main.py", "problem": "Missing error handling"}
+        ])
+        self.state.set_iteration(2)
+        briefing = self.state.as_briefing()
+        self.assertIn("Missing error handling", briefing)
 
 
 if __name__ == "__main__":

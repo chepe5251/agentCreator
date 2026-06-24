@@ -375,7 +375,10 @@ class EnterpriseOrchestrator:
                         "'requirements.txt' (real pip packages only, never stdlib modules like json/os/typing)."
                     ))
                     deliverables[f"dev::{f}"] = await response.text()
-                    self.state.record_contribution(f"dev:{f}", deliverables[f"dev::{f}"][:600])
+                    self.state.record_contribution(
+                        f"dev:{f}",
+                        f"Implemented {f}: {module['purpose']}"
+                    )
 
         else:
             # Fix phase
@@ -395,6 +398,10 @@ class EnterpriseOrchestrator:
                 ))
                 deliverables["pm"] = await response.text()
                 pm_instructions = deliverables["pm"]
+                self.state.record_contribution(
+                    f"pm:fix_iter_{iteration}",
+                    f"[fix iter {iteration}] PM wrote correction plan"
+                )
 
             # One generalist developer applies ALL fixes across whatever files are affected
             async with get_agent("backend") as dev:
@@ -412,6 +419,10 @@ class EnterpriseOrchestrator:
                     "import and call them — no 'this would invoke ...' placeholder comments. No TODOs, no mock logic."
                 ))
                 deliverables["developer"] = await response.text()
+                self.state.record_contribution(
+                    f"dev:fix_iter_{iteration}",
+                    f"[fix iter {iteration}] applied corrections per audit feedback"
+                )
 
         return deliverables
 
